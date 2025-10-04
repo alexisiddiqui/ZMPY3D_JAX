@@ -134,4 +134,4 @@ dmypy.json
 - # Pyre type checker
 .pyre/
 
-ZMPY3D/cache_data/LogG_CLMCache_MaxOrder40.pkl
+ZMPY3D_JAX/cache_data/LogG_CLMCache_MaxOrder40.pkl
