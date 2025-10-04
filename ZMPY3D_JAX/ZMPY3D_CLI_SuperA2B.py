@@ -24,27 +24,65 @@ import argparse
 import os
 import pickle
 import sys
+from typing import Sequence, Tuple
 
 import numpy as np
 
 import ZMPY3D_JAX as z
 
 
-def ZMPY3D_CLI_SuperA2B(PDBFileNameA, PDBFileNameB):
+def ZMPY3D_CLI_SuperA2B(PDBFileNameA: str, PDBFileNameB: str) -> np.ndarray:
+    """
+    Generate a transformation matrix to superimpose structure A onto structure B.
+
+    This function calculates the optimal 4x4 transformation matrix (rotation + translation)
+    to align structure A with structure B based on their 3D Zernike moment descriptors.
+    The alignment is performed by comparing all possible rotations of the Zernike moments
+    and selecting the transformation that maximizes their similarity.
+
+    Parameters
+    ----------
+    PDBFileNameA : str
+        Path to the first PDB file (structure A) in old PDB text format.
+        Must end with .pdb or .txt.
+    PDBFileNameB : str
+        Path to the second PDB file (structure B) in old PDB text format.
+        Must end with .pdb or .txt.
+
+    Returns
+    -------
+    numpy.ndarray
+        4x4 transformation matrix to apply to structure A's coordinates to align it with
+        structure B. The matrix combines rotation and translation operations.
+
+    Notes
+    -----
+    - The function uses MaxOrder=6 for Zernike moment calculations.
+    - Grid width is fixed at 1.0 Angstroms.
+    - All possible rotations up to order 6 are evaluated (96 rotation pairs total).
+    - The transformation is computed by solving: TargetRotM = inv(RotM_B) @ RotM_A
+    - The resulting matrix should be applied to structure A's atomic coordinates.
+
+    Examples
+    --------
+    >>> matrix = ZMPY3D_CLI_SuperA2B('protein_A.pdb', 'protein_B.pdb')
+    >>> # Apply matrix to structure A coordinates to align with B
+    """
+
     def ZMCal(
-        PDBFileName,
-        GridWidth,
-        BinomialCache,
-        CLMCache,
-        CLMCache3D,
-        GCache_complex,
-        GCache_complex_index,
-        GCache_pqr_linear,
-        MaxOrder,
-        Param,
-        ResidueBox,
-        RotationIndex,
-    ):
+        PDBFileName: str,
+        GridWidth: float,
+        BinomialCache: object,
+        CLMCache: object,
+        CLMCache3D: object,
+        GCache_complex: object,
+        GCache_complex_index: object,
+        GCache_pqr_linear: object,
+        MaxOrder: int,
+        Param: dict,
+        ResidueBox: dict,
+        RotationIndex: dict,
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, Sequence[str]]:
         [XYZ, AA_NameList] = z.get_pdb_xyz_ca(PDBFileName)
 
         [Voxel3D, Corner] = z.fill_voxel_by_weight_density(
@@ -205,7 +243,23 @@ def ZMPY3D_CLI_SuperA2B(PDBFileNameA, PDBFileNameB):
     return TargetRotM
 
 
-def main():
+def main() -> None:
+    """
+    Main function to execute the ZMPY3D_CLI_SuperA2B script.
+
+    This function parses command-line arguments, validates input files, and calls the
+    ZMPY3D_CLI_SuperA2B function to compute the transformation matrix for structure
+    superimposition. The resulting matrix is printed to the console.
+
+    Command-line arguments:
+    - Two input files in .pdb or .txt format representing the structures to be aligned.
+
+    Output:
+    - Prints the 4x4 transformation matrix to the console.
+
+    Example usage:
+    >>> python ZMPY3D_CLI_SuperA2B.py structureA.pdb structureB.pdb
+    """
     if len(sys.argv) != 3:
         print("Usage: ZMPY3D_CLI_SuperA2B PDB_A PDB_B")
         print(

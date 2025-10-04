@@ -25,27 +25,71 @@ import argparse
 import os
 import pickle
 import sys
+from typing import List, Sequence, Tuple
 
 import numpy as np
 
 import ZMPY3D_JAX as z
 
 
-def ZMPY3D_CLI_BatchSuperA2B(PDBFileNameA, PDBFileNameB):
+def ZMPY3D_CLI_BatchSuperA2B(
+    PDBFileNameA: Sequence[str], PDBFileNameB: Sequence[str]
+) -> List[np.ndarray]:
+    """
+    Generate transformation matrices for superimposing multiple structure pairs.
+
+    This function processes pairs of PDB structures and calculates optimal transformation
+    matrices to align each structure A onto its corresponding structure B. The alignment
+    is based on 3D Zernike moment descriptor similarity.
+
+    Parameters
+    ----------
+    PDBFileNameA : list of str
+        List of paths to PDB files (structure A in each pair) in old PDB text format.
+        Must end with .pdb or .txt.
+    PDBFileNameB : list of str
+        List of paths to PDB files (structure B in each pair) in old PDB text format.
+        Must end with .pdb or .txt. Must have the same length as PDBFileNameA.
+
+    Returns
+    -------
+    list of numpy.ndarray
+        List of 4x4 transformation matrices, one for each structure pair.
+        Each matrix combines rotation and translation to align structure A with structure B.
+
+    Notes
+    -----
+    - This is the batch processing version of ZMPY3D_CLI_SuperA2B.
+    - The function uses MaxOrder=6 for Zernike moment calculations.
+    - Grid width is fixed at 1.0 Angstroms for all structures.
+    - All possible rotations up to order 6 are evaluated (96 rotation pairs per structure).
+    - Each transformation matrix should be applied to the corresponding structure A's coordinates.
+    - Pairs are processed sequentially; the i-th matrix aligns PDBFileNameA[i] with PDBFileNameB[i].
+
+    Examples
+    --------
+    >>> structures_A = ['protein1_conf1.pdb', 'protein2_conf1.pdb']
+    >>> structures_B = ['protein1_conf2.pdb', 'protein2_conf2.pdb']
+    >>> matrices = ZMPY3D_CLI_BatchSuperA2B(structures_A, structures_B)
+    >>> for i, matrix in enumerate(matrices):
+    ...     print(f"Transformation matrix for pair {i+1}:")
+    ...     print(matrix)
+    """
+
     def ZMCal(
-        PDBFileName,
-        GridWidth,
-        BinomialCache,
-        CLMCache,
-        CLMCache3D,
-        GCache_complex,
-        GCache_complex_index,
-        GCache_pqr_linear,
-        MaxOrder,
-        Param,
-        ResidueBox,
-        RotationIndex,
-    ):
+        PDBFileName: str,
+        GridWidth: float,
+        BinomialCache: object,
+        CLMCache: object,
+        CLMCache3D: object,
+        GCache_complex: object,
+        GCache_complex_index: object,
+        GCache_pqr_linear: object,
+        MaxOrder: int,
+        Param: dict,
+        ResidueBox: dict,
+        RotationIndex: dict,
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, Sequence[str]]:
         [XYZ, AA_NameList] = z.get_pdb_xyz_ca(PDBFileName)
 
         [Voxel3D, Corner] = z.fill_voxel_by_weight_density(
@@ -215,7 +259,7 @@ def ZMPY3D_CLI_BatchSuperA2B(PDBFileNameA, PDBFileNameB):
     return TargetRotM
 
 
-def main():
+def main() -> None:
     if len(sys.argv) != 2:
         print("Usage: ZMPY3D_CLI_BatchSuperA2B PDBFileList.txt")
         print(

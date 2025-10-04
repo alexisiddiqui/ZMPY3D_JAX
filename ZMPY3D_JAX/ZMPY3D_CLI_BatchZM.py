@@ -25,13 +25,63 @@ import argparse
 import os
 import pickle
 import sys
+from typing import List, Sequence
 
 import numpy as np
 
 import ZMPY3D_JAX as z
 
 
-def ZMPY3D_CLI_BatchZM(PDBFileName, GridWidth=1.0, MaxOrder=6, MaxTargetOrder2NormRotate=5, Mode=0):
+def ZMPY3D_CLI_BatchZM(
+    PDBFileName: Sequence[str],
+    GridWidth: float = 1.0,
+    MaxOrder: int = 6,
+    MaxTargetOrder2NormRotate: int = 5,
+    Mode: int = 0,
+) -> List[np.ndarray]:
+    """
+    Calculate 3D Zernike moments for a batch of PDB structures.
+
+    This function processes multiple PDB files and computes rotation-invariant 3D Zernike
+    moment descriptors for each structure. It supports different normalization schemes
+    and can handle various grid widths and maximum orders.
+
+    Parameters
+    ----------
+    PDBFileName : list of str
+        List of paths to PDB files (must end with .pdb or .txt) in old PDB text format.
+    GridWidth : float, optional
+        Voxel grid width in Angstroms. Must be 0.25, 0.50, or 1.00. Default is 1.0.
+    MaxOrder : int, optional
+        Maximum order for calculating Zernike moments. Must be 6, 20, or 40. Default is 6.
+    MaxTargetOrder2NormRotate : int, optional
+        Maximum order for normalization rotation. Must be >= 2 and <= MaxOrder. Default is 5.
+    Mode : int, optional
+        Descriptor calculation mode:
+        - 0: Canterakis normalization only (rotation-invariant moments for orders 2-MaxTargetOrder2NormRotate)
+        - 1: 3DZD 121 invariant descriptor only
+        - 2: Both Canterakis normalization and 3DZD 121 invariant
+        Default is 0.
+
+    Returns
+    -------
+    list of numpy.ndarray
+        List containing Zernike moment descriptor arrays for each input structure.
+        Each array contains concatenated descriptors with NaN values removed.
+
+    Notes
+    -----
+    - This is the batch processing version of ZMPY3D_CLI_ZM.
+    - All structures are processed with the same parameters.
+    - Pre-cached coefficients are loaded once and reused for all structures.
+    - Useful for generating descriptors for shape database searches or clustering.
+
+    Examples
+    --------
+    >>> pdb_files = ['protein1.pdb', 'protein2.pdb', 'protein3.pdb']
+    >>> descriptors = ZMPY3D_CLI_BatchZM(pdb_files, GridWidth=1.0, MaxOrder=20, Mode=2)
+    >>> print(f"Computed {len(descriptors)} descriptors")
+    """
     Param = z.get_global_parameter()
 
     BinomialCacheFilePath = os.path.join(
@@ -75,7 +125,7 @@ def ZMPY3D_CLI_BatchZM(PDBFileName, GridWidth=1.0, MaxOrder=6, MaxTargetOrder2No
 
     ResidueBox = z.get_residue_gaussian_density_cache(Param)
 
-    def core(PDBFileName, Mode):
+    def core(PDBFileName: str, Mode: int) -> np.ndarray:
         [XYZ, AA_NameList] = z.get_pdb_xyz_ca(PDBFileName)
 
         [Voxel3D, Corner] = z.fill_voxel_by_weight_density(
@@ -170,7 +220,25 @@ def ZMPY3D_CLI_BatchZM(PDBFileName, GridWidth=1.0, MaxOrder=6, MaxTargetOrder2No
     return ZM
 
 
-def main():
+def main() -> None:
+    """
+    Main function to execute the ZMPY3D_CLI_BatchZM script from the command line.
+
+    This function parses command line arguments, validates input files, and
+    calls the ZMPY3D_CLI_BatchZM function to compute Zernike moment descriptors
+    for a list of PDB files. The results are then printed to the standard output.
+
+    Command line arguments:
+    - input_file: The input file containing paths to PDB or TXT files.
+    - GW: Grid width, must be one of [0.25, 0.50, 1.00].
+    - MaxOrder: Maximum order for Zernike moment calculation, must be one of [6, 20, 40].
+    - MaxN: Maximum normalization order, must be an integer >= 2 and <= MaxOrder.
+    - Mode: Calculation mode, must be one of [0, 1, 2].
+
+    The input file must be a text file with one PDB or TXT file path per line.
+    The script will compute the Zernike moments for each structure using the
+    specified parameters and print the resulting descriptors to the console.
+    """
     if len(sys.argv) != 6:
         print("Usage: ZMPY3D_CLI_BatchZM PDBFileList GridWidth MaximumOrder NormOrder Mode")
         print(

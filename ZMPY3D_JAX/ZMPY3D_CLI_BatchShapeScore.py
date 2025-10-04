@@ -25,27 +25,77 @@ import argparse
 import os
 import pickle
 import sys
+from typing import List, Sequence, Tuple
 
 import numpy as np
 
 import ZMPY3D_JAX as z
 
 
-def ZMPY3D_CLI_BatchShapeScore(PDBFileNameA, PDBFileNameB, GridWidth):
+def ZMPY3D_CLI_BatchShapeScore(
+    PDBFileNameA: Sequence[str], PDBFileNameB: Sequence[str], GridWidth: float
+) -> Tuple[List[float], List[float]]:
+    """
+    Calculate shape similarity scores for multiple structure pairs.
+
+    This function processes pairs of PDB structures and computes shape similarity scores
+    for each pair. Two complementary scores are calculated: ZMScore (based on Zernike moments)
+    and GeoScore (based on geometric descriptors).
+
+    Parameters
+    ----------
+    PDBFileNameA : list of str
+        List of paths to PDB files (first structure in each pair) in old PDB text format.
+        Must end with .pdb or .txt.
+    PDBFileNameB : list of str
+        List of paths to PDB files (second structure in each pair) in old PDB text format.
+        Must end with .pdb or .txt. Must have the same length as PDBFileNameA.
+    GridWidth : float
+        Voxel grid width in Angstroms. Must be 0.25, 0.50, or 1.00.
+
+    Returns
+    -------
+    tuple of (list of float, list of float)
+        GeoScoreScaled : list of float
+            List of scaled geometric similarity scores (0-100) for each pair.
+            Higher values indicate greater geometric similarity.
+        ZMScoreScaled : list of float
+            List of scaled Zernike moment similarity scores (0-100) for each pair.
+            Higher values indicate greater shape similarity.
+
+    Notes
+    -----
+    - This is the batch processing version of ZMPY3D_CLI_ShapeScore.
+    - Zernike moments are calculated up to MaxOrder=20 for all structures.
+    - Both 3DZD 121 invariant and rotation-invariant moments (orders 2-5) are used.
+    - Geometric descriptors include: molecular radius, total residue weight,
+      distance percentiles, standard deviation, skewness, and kurtosis.
+    - All structure pairs are processed with the same grid width.
+    - Useful for comparing multiple protein conformations or performing shape-based screening.
+
+    Examples
+    --------
+    >>> structures_A = ['target.pdb', 'target.pdb', 'target.pdb']
+    >>> structures_B = ['candidate1.pdb', 'candidate2.pdb', 'candidate3.pdb']
+    >>> geo_scores, zm_scores = ZMPY3D_CLI_BatchShapeScore(structures_A, structures_B, 1.0)
+    >>> for i, (geo, zm) in enumerate(zip(geo_scores, zm_scores)):
+    ...     print(f"Pair {i+1}: GeoScore={geo:.2f}, ZMScore={zm:.2f}")
+    """
+
     def ZMCal(
-        PDBFileName,
-        GridWidth,
-        BinomialCache,
-        CLMCache,
-        CLMCache3D,
-        GCache_complex,
-        GCache_complex_index,
-        GCache_pqr_linear,
-        MaxOrder,
-        Param,
-        ResidueBox,
-        RotationIndex,
-    ):
+        PDBFileName: str,
+        GridWidth: float,
+        BinomialCache: object,
+        CLMCache: object,
+        CLMCache3D: object,
+        GCache_complex: object,
+        GCache_complex_index: object,
+        GCache_pqr_linear: object,
+        MaxOrder: int,
+        Param: dict,
+        ResidueBox: dict,
+        RotationIndex: dict,
+    ) -> Tuple[np.ndarray, np.ndarray]:
         [XYZ, AA_NameList] = z.get_pdb_xyz_ca(PDBFileName)
 
         [Voxel3D, Corner] = z.fill_voxel_by_weight_density(
@@ -286,7 +336,27 @@ def ZMPY3D_CLI_BatchShapeScore(PDBFileNameA, PDBFileNameB, GridWidth):
     return GeoScoreScaled, ZMScoreScaled
 
 
-def main():
+def main() -> None:
+    """Main function to execute batch shape scoring from command line.
+
+    This function parses command line arguments, reads pairs of PDB file paths from the
+    specified input file, and computes the geometric and Zernike moment shape similarity
+    scores for each pair. The results are then printed to the console.
+
+    Command line arguments:
+    - input_file : str
+        The input file that contains paths to .pdb or .txt files. Must end with .txt.
+    - grid_width : str
+        The grid width (must be 0.25, 0.50 or 1.0)
+
+    The function expects the input file to contain pairs of file paths (one for each structure
+    in the pair) separated by whitespace. Each file path must end with .pdb or .txt, and the
+    files must exist. The grid width specifies the voxel grid size in Angstroms and must be
+    one of the following values: 0.25, 0.50, or 1.0.
+
+    The results are two lists of scaled scores for each pair: the geometric descriptor score
+    (GeoScore) and the Zernike moment score (ZMScore). Higher scores indicate greater similarity.
+    """
     if len(sys.argv) != 3:
         print("Usage: ZMPY3D_CLI_BatchShapeScore PDBFileList.txt GridWidth")
         print(

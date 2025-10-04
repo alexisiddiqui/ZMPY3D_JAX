@@ -32,6 +32,7 @@ setup(
         "gdown",
         "ipykernel",
         "py3Dmol",
+        "pytest",
     ],
     include_package_data=True,  # for the cache
 )

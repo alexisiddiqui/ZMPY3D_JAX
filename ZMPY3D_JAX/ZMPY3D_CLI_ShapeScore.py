@@ -25,27 +25,73 @@ import argparse
 import os
 import pickle
 import sys
+from typing import Tuple
 
 import numpy as np
 
 import ZMPY3D_JAX as z
 
 
-def ZMPY3D_CLI_ShapeScore(PDBFileNameA, PDBFileNameB, GridWidth):
+def ZMPY3D_CLI_ShapeScore(
+    PDBFileNameA: str, PDBFileNameB: str, GridWidth: float
+) -> Tuple[float, float]:
+    """
+    Calculate shape similarity scores between two PDB structures.
+
+    This function computes two complementary shape similarity scores:
+    1. ZMScore: Based on 3D Zernike moment descriptors (rotation-invariant shape descriptor)
+    2. GeoScore: Based on geometric descriptors (size, weight, distance distributions)
+
+    Both scores are scaled to a 0-100 range where higher values indicate greater similarity.
+
+    Parameters
+    ----------
+    PDBFileNameA : str
+        Path to the first PDB file in old PDB text format. Must end with .pdb or .txt.
+    PDBFileNameB : str
+        Path to the second PDB file in old PDB text format. Must end with .pdb or .txt.
+    GridWidth : float
+        Voxel grid width in Angstroms. Must be 0.25, 0.50, or 1.00.
+
+    Returns
+    -------
+    tuple of (float, float)
+        GeoScoreScaled : float
+            Scaled geometric similarity score (0-100), where 100 indicates identical geometry.
+        ZMScoreScaled : float
+            Scaled Zernike moment similarity score (0-100), where 100 indicates identical shape.
+
+    Notes
+    -----
+    - Zernike moments are calculated up to MaxOrder=20.
+    - Both 3DZD 121 invariant and rotation-invariant moments (orders 2-5) are used.
+    - Geometric descriptors include: molecular radius, total residue weight,
+      distance percentiles, standard deviation, skewness, and kurtosis.
+    - Scores are scaled using empirically determined thresholds:
+      * GeoScore: (6.6 - raw_score) / 6.6 * 100
+      * ZMScore: (9.0 - raw_score) / 9.0 * 100
+
+    Examples
+    --------
+    >>> geo_score, zm_score = ZMPY3D_CLI_ShapeScore('1WAC_A.pdb', '2JL9_A.pdb', 1.0)
+    >>> print(f"Geometric similarity: {geo_score:.2f}")
+    >>> print(f"Shape similarity: {zm_score:.2f}")
+    """
+
     def ZMCal(
-        PDBFileName,
-        GridWidth,
-        BinomialCache,
-        CLMCache,
-        CLMCache3D,
-        GCache_complex,
-        GCache_complex_index,
-        GCache_pqr_linear,
-        MaxOrder,
-        Param,
-        ResidueBox,
-        RotationIndex,
-    ):
+        PDBFileName: str,
+        GridWidth: float,
+        BinomialCache: object,
+        CLMCache: object,
+        CLMCache3D: object,
+        GCache_complex: object,
+        GCache_complex_index: object,
+        GCache_pqr_linear: object,
+        MaxOrder: int,
+        Param: dict,
+        ResidueBox: dict,
+        RotationIndex: dict,
+    ) -> Tuple[np.ndarray, np.ndarray]:
         [XYZ, AA_NameList] = z.get_pdb_xyz_ca(PDBFileName)
 
         [Voxel3D, Corner] = z.fill_voxel_by_weight_density(
@@ -279,7 +325,26 @@ def ZMPY3D_CLI_ShapeScore(PDBFileNameA, PDBFileNameB, GridWidth):
     return GeoScoreScaled, ZMScoreScaled
 
 
-def main():
+def main() -> None:
+    """Main function to execute shape similarity scoring from command line arguments.
+
+    This function serves as the entry point for the ZMPY3D_CLI_ShapeScore module when
+    executed as a standalone script. It parses command line arguments, validates input
+    files and grid width, and invokes the shape scoring computation. The resulting
+    similarity scores are then printed to the console.
+
+    Command line arguments:
+    - Two input files (PDB or TXT) containing protein structure data.
+    - A grid width value (0.25, 0.50, or 1.0) specifying the voxel size for 3D
+      grid representation of the structures.
+
+    The function expects exactly three arguments: the first input file, the second input
+    file, and the grid width. It will terminate with an error message if the number of
+    arguments is incorrect or if the provided files do not exist.
+
+    The computed geometric and Zernike moment similarity scores are scaled to a 0-100
+    range and printed as output.
+    """
     if len(sys.argv) != 4:
         print("Usage: ZMPY3D_CLI_ShapeScore PDB_A PDB_B GridWidth")
         print(

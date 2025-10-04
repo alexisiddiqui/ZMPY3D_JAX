@@ -30,7 +30,50 @@ import numpy as np
 import ZMPY3D_JAX as z
 
 
-def ZMPY3D_CLI_ZM(PDBFileName, GridWidth=1.0, MaxOrder=6, MaxTargetOrder2NormRotate=5, Mode=0):
+def ZMPY3D_CLI_ZM(
+    PDBFileName: str,
+    GridWidth: float = 1.0,
+    MaxOrder: int = 6,
+    MaxTargetOrder2NormRotate: int = 5,
+    Mode: int = 0,
+) -> np.ndarray:
+    """
+    Calculate 3D Zernike moments for a single PDB structure.
+
+    This function computes rotation-invariant 3D Zernike moment descriptors from a protein
+    structure by voxelizing the structure and calculating its Zernike moments up to a specified
+    maximum order. Different normalization schemes can be applied based on the Mode parameter.
+
+    Parameters
+    ----------
+    PDBFileName : str
+        Path to the PDB file (must end with .pdb or .txt) in old PDB text format.
+    GridWidth : float, optional
+        Voxel grid width in Angstroms. Must be 0.25, 0.50, or 1.00. Default is 1.0.
+    MaxOrder : int, optional
+        Maximum order for calculating Zernike moments. Must be 6, 20, or 40. Default is 6.
+    MaxTargetOrder2NormRotate : int, optional
+        Maximum order for normalization rotation. Must be >= 2 and <= MaxOrder. Default is 5.
+    Mode : int, optional
+        Descriptor calculation mode:
+        - 0: Canterakis normalization only (rotation-invariant moments for orders 2-MaxTargetOrder2NormRotate)
+        - 1: 3DZD 121 invariant descriptor only
+        - 2: Both Canterakis normalization and 3DZD 121 invariant
+        Default is 0.
+
+    Returns
+    -------
+    numpy.ndarray
+        Concatenated array of Zernike moment descriptors with NaN values removed.
+        The specific descriptors depend on the Mode parameter.
+
+    Notes
+    -----
+    - The function uses pre-cached binomial coefficients and CLM (Clebsch-Gordan) coefficients
+      for efficient computation.
+    - The structure is voxelized using Gaussian density distributions for each residue.
+    - Zernike moments are calculated within a spherical bounding box centered on the molecule.
+    """
     Param = z.get_global_parameter()
 
     BinomialCacheFilePath = os.path.join(
@@ -164,7 +207,26 @@ def ZMPY3D_CLI_ZM(PDBFileName, GridWidth=1.0, MaxOrder=6, MaxTargetOrder2NormRot
     return np.concatenate([z[~np.isnan(z)] for z in ZMList])
 
 
-def main():
+def main() -> None:
+    """
+    Main function to execute the ZMPY3D_CLI_ZM calculation from command line arguments.
+
+    Usage
+    -----
+    ZMPY3D_CLI_ZM PDBFile GridWidth MaximumOrder NormOrder Mode
+
+    This function computes the Zernike moment based on the specified maximum order, normalization order, and voxel gridding width.
+
+    The input parameters are as follows:
+    - PDBFile: Path to the input PDB file (must end with .pdb or .txt) in old PDB text format.
+    - GridWidth: Voxel grid width in Angstroms (must be 0.25, 0.50, or 1.00).
+    - MaximumOrder: Maximum order for calculating Zernike moments (must be 6, 20, or 40).
+    - NormOrder: Maximum order for normalization rotation (must be >= 2 and <= MaximumOrder).
+    - Mode: Descriptor calculation mode (must be 0, 1, or 2).
+
+    The results are printed as NumPy arrays with NaN values removed. The specific Zernike moment
+    descriptors returned depend on the selected mode.
+    """
     if len(sys.argv) != 6:
         print("Usage: ZMPY3D_CLI_ZM PDBFile GridWidth MaximumOrder NormOrder Mode")
         print(
