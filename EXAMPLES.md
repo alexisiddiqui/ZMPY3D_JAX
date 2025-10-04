@@ -44,11 +44,15 @@ X_sample = np.arange(Dimension_BBox_scaled[0] + 1, dtype=np.float64)
 Y_sample = np.arange(Dimension_BBox_scaled[1] + 1, dtype=np.float64)
 Z_sample = np.arange(Dimension_BBox_scaled[2] + 1, dtype=np.float64)
 
-VolumeMass, Center, _ = z.calculate_bbox_moment(Voxel3D, 1, X_sample, Y_sample, Z_sample)
+XYZ_SampleStruct = {'X_sample': X_sample, 'Y_sample': Y_sample, 'Z_sample': Z_sample}
+
+VolumeMass, Center, _ = z.calculate_bbox_moment(Voxel3D, 1, XYZ_SampleStruct)
 AverageVoxelDist2Center, _ = z.calculate_molecular_radius(Voxel3D, Center, VolumeMass, Param['default_radius_multiplier'])
 Sphere_X_sample, Sphere_Y_sample, Sphere_Z_sample = z.get_bbox_moment_xyz_sample(Center, AverageVoxelDist2Center, Dimension_BBox_scaled)
 
-_, _, SphereBBoxMoment = z.calculate_bbox_moment(Voxel3D, MaxOrder, Sphere_X_sample, Sphere_Y_sample, Sphere_Z_sample)
+SphereXYZ_SampleStruct = {'X_sample': Sphere_X_sample, 'Y_sample': Sphere_Y_sample, 'Z_sample': Sphere_Z_sample}
+
+_, _, SphereBBoxMoment = z.calculate_bbox_moment(Voxel3D, MaxOrder, SphereXYZ_SampleStruct)
 
 # Convert to scaled 3D Zernike moments
 ZMoment_scaled, _ = z.calculate_bbox_moment_2_zm(MaxOrder, GCache_complex, GCache_pqr_linear, GCache_complex_index, CLMCache3D, SphereBBoxMoment)
@@ -123,11 +127,15 @@ def get_descriptors(pdb_filename, MaxOrder, GridWidth, Param, ResidueBox,
     Y_sample = np.arange(Dimension_BBox_scaled[1] + 1, dtype=np.float64)
     Z_sample = np.arange(Dimension_BBox_scaled[2] + 1, dtype=np.float64)
 
-    VolumeMass, Center, _ = z.calculate_bbox_moment(Voxel3D, 1, X_sample, Y_sample, Z_sample)
+    XYZ_SampleStruct = {'X_sample': X_sample, 'Y_sample': Y_sample, 'Z_sample': Z_sample}
+
+    VolumeMass, Center, _ = z.calculate_bbox_moment(Voxel3D, 1, XYZ_SampleStruct)
     AverageVoxelDist2Center, _ = z.calculate_molecular_radius(Voxel3D, Center, VolumeMass, Param['default_radius_multiplier'])
     Sphere_X_sample, Sphere_Y_sample, Sphere_Z_sample = z.get_bbox_moment_xyz_sample(Center, AverageVoxelDist2Center, Dimension_BBox_scaled)
 
-    _, _, SphereBBoxMoment = z.calculate_bbox_moment(Voxel3D, MaxOrder, Sphere_X_sample, Sphere_Y_sample, Sphere_Z_sample)
+    SphereXYZ_SampleStruct = {'X_sample': Sphere_X_sample, 'Y_sample': Sphere_Y_sample, 'Z_sample': Sphere_Z_sample}
+
+    _, _, SphereBBoxMoment = z.calculate_bbox_moment(Voxel3D, MaxOrder, SphereXYZ_SampleStruct)
     ZMoment_scaled, ZMoment_raw = z.calculate_bbox_moment_2_zm(MaxOrder, GCache_complex, GCache_pqr_linear, GCache_complex_index, CLMCache3D, SphereBBoxMoment)
 
     ZMList = []
