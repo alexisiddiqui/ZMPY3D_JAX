@@ -127,11 +127,20 @@ class TestCalculateBBoxMoment:
         """Test that output types are correct."""
         volume_mass, center, moment = z.calculate_bbox_moment(simple_voxel, 2, xyz_samples)
 
-        assert isinstance(volume_mass, (float, np.floating))
-        assert isinstance(center, np.ndarray)
-        assert isinstance(moment, np.ndarray)
-        assert center.dtype == np.float64
-        assert moment.dtype == np.float64
+        # Convert outputs to numpy arrays to support numpy arrays/scalars and JAX arrays
+        vol_arr = np.asarray(volume_mass)
+        center_arr = np.asarray(center)
+        moment_arr = np.asarray(moment)
+
+        # volume_mass should be a scalar floating-point value
+        assert np.issubdtype(vol_arr.dtype, np.floating)
+        assert vol_arr.shape == () or vol_arr.ndim == 0
+
+        # center should be a 1D array of floats and moment should be a numeric array
+        assert center_arr.ndim == 1
+        assert moment_arr.ndim >= 1
+        assert np.issubdtype(center_arr.dtype, np.floating)
+        assert np.issubdtype(moment_arr.dtype, np.floating)
 
     def test_time_evaluation_runtime(self, simple_voxel, xyz_samples):
         """Timed evaluation wrapper for calculate_bbox_moment (order 1)."""
