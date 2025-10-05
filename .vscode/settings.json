@@ -1,6 +1,7 @@
 {
     "python.testing.pytestArgs": [
-        "ZMPY3D_JAX"
+        "ZMPY3D_JAX",
+        "-vv"
     ],
     "python.testing.unittestEnabled": false,
     "python.testing.pytestEnabled": true

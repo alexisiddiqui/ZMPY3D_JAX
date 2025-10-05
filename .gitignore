@@ -135,3 +135,5 @@ dmypy.json
 .pyre/
 
 ZMPY3D_JAX/cache_data/LogG_CLMCache_MaxOrder40.pkl
+
+_*/
