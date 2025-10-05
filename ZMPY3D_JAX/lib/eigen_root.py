@@ -17,14 +17,18 @@ def eigen_root(poly_coefficient_list: chex.Array) -> chex.Array:
     if n <= 0:
         return jnp.asarray([], dtype=COMPLEX_DTYPE)
 
-    if coef[0] == 0:
-        raise ValueError("Leading coefficient must be non-zero for companion matrix construction")
+    # Define true_fn and false_fn for jax.lax.cond
+    def true_fn(c):
+        # Return NaNs to indicate an invalid input (leading coefficient is zero)
+        return jnp.full((n,), jnp.nan, dtype=COMPLEX_DTYPE)
 
-    # build companion matrix with ones on subdiagonal (concise)
-    m = jnp.diag(jnp.ones(n - 1, dtype=COMPLEX_DTYPE), k=-1)
-    m = m.at[0, :].set(-coef[1:] / coef[0])
+    def false_fn(c):
+        # build companion matrix with ones on subdiagonal (concise)
+        m = jnp.diag(jnp.ones(n - 1, dtype=COMPLEX_DTYPE), k=-1)
+        m = m.at[0, :].set(-c[1:] / c[0])
+        return jnp.linalg.eigvals(m)
 
-    return jnp.linalg.eigvals(m)
+    return jax.lax.cond(coef[0] == 0, true_fn, false_fn, coef)
 
 
 # Vectorized version for batching
