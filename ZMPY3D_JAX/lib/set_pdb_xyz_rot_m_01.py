@@ -1,6 +1,4 @@
-# The matrix multiplication and rounding are prime candidates for JAX transformation (e.g., `jit`, `grad`).
-# The string parsing and formatting parts would remain standard Python/NumPy operations.
-
+# This does not improve performance, as file I/O is not optimized by JAX. Does need updating to handle chex/jax/numpy arrays.
 import numpy as np
 
 from .read_file_as_string_list import read_file_as_string_list

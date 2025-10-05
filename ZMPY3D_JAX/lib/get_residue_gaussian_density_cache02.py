@@ -1,6 +1,4 @@
-# The core numerical operations (summation, division, exponentiation, array multiplication) are all JAX-compatible.
-# The loops can be handled by `jax.lax.scan` or by ensuring that `calculate_box_by_grid_width` is JAX-transformed and then mapping over the `doable_grid_width_list` if possible.
-# The dictionary creation would remain outside the JAX-transformed functions, but the arrays within them would be JAX arrays.
+# Reequires calculate_box_by_grid_width to be converted to jax first as this is the bottleneck.
 
 from typing import Any, Dict
 
