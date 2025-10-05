@@ -93,6 +93,36 @@
     *   `Mode == 2`: Calculates both.
 7.  Concatenates the resulting Zernike moments.
 
+## Configuration and globals
+
+ZMPY3D_JAX exposes a runtime configuration function and module-level globals to control JAX precision and target platform:
+
+- Globals
+  - FLOAT_DTYPE — default: jax.numpy.float32
+  - COMPLEX_DTYPE — default: jax.numpy.complex64
+
+  These module-level variables determine the preferred floating and complex dtypes used across the library. They are set to single-precision by default but can be upgraded to double-precision.
+
+- configure_for_scientific_computing(enable_x64: bool = True, platform: str = "CPU")
+  - Purpose: configure JAX for numerical reliability and target device.
+  - Behavior:
+    - If enable_x64 is True:
+      - Enables JAX float64 support (jax.config.update("jax_enable_x64", True))
+      - Sets FLOAT_DTYPE = jax.numpy.float64 and COMPLEX_DTYPE = jax.numpy.complex128
+    - If enable_x64 is False:
+      - Disables float64 (jax.config.update("jax_enable_x64", False))
+      - Sets FLOAT_DTYPE = jax.numpy.float32 and COMPLEX_DTYPE = jax.numpy.complex64
+    - If platform is provided (e.g., 'CPU', 'GPU', 'TPU'), it updates jax_platform_name accordingly.
+  - Notes:
+    - Call this function once at program startup, before any JAX arrays/compiled functions are created.
+    - Enabling float64 is recommended for Zernike moment calculations to reduce numerical errors in iterative/accumulative computations.
+  - Minimal example:
+    ```python
+    import ZMPY3D_JAX as z
+    z.configure_for_scientific_computing(enable_x64=True, platform="CPU")
+    # after this, z.FLOAT_DTYPE and z.COMPLEX_DTYPE reflect chosen precision
+    ```
+
 ## ZMPY3D_JAX/lib/ Python Files Overview
 
 ### `ZMPY3D_JAX/lib/write_string_list_as_file.py`
