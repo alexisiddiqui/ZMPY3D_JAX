@@ -6,15 +6,18 @@
 # This function is numerically intensive and would greatly benefit from JAX transformation, but requires careful handling of loops and conditional logic.
 
 
-import numpy as np
+import chex
+import jax.numpy as jnp
+
+from ZMPY3D_JAX import config as _config
 
 from .calculate_ab_candidates_jax import compute_ab_candidates_jax
 from .eigen_root import eigen_root
 
 
 def calculate_ab_rotation_02(
-    z_moment_raw: np.ndarray, target_order2_norm_rotate: int
-) -> np.ndarray:
+    z_moment_raw: chex.Array, target_order2_norm_rotate: int
+) -> chex.Array:
     """Calculates 'a' and 'b' Cayley-Klein rotation parameters for 3D Zernike moment normalization.
 
     This function implements the complete rotation-invariant 3D Zernike moment normalization
@@ -69,94 +72,43 @@ def calculate_ab_rotation_02(
         - Solutions with |b_im/b_re| < 1e-7 are filtered as numerically unstable
         - The method preserves all information while achieving rotation invariance
     """
+
     ind_real = 2
 
+    # Ensure JAX arrays and complex dtype
+    z_moment_raw = jnp.asarray(z_moment_raw, dtype=_config.COMPLEX_DTYPE)
+
+    # Step 1: Compute abconj_sol (differs by parity) using batched eigen solver
     if target_order2_norm_rotate % 2 == 0:
-        abconj_coef = [
-            z_moment_raw[target_order2_norm_rotate, 2, 2],
-            -z_moment_raw[target_order2_norm_rotate, 2, 1],
-            z_moment_raw[target_order2_norm_rotate, 2, 0],
-            np.conj(z_moment_raw[target_order2_norm_rotate, 2, 1]),
-            np.conj(z_moment_raw[target_order2_norm_rotate, 2, 2]),
-        ]
-        abconj_sol = eigen_root(abconj_coef)
-        a, b, is_valid = compute_ab_candidates_jax(z_moment_raw, abconj_sol, ind_real)
-
-        # Filter invalid solutions and reshape
-        a_flat = a[is_valid]
-        b_flat = b[is_valid]
-
-        if a_flat.size == 0:
-            return np.empty((0, 2), dtype=complex)
-
-        return np.stack([a_flat, b_flat], axis=1)
+        abconj_coef = jnp.array(
+            [
+                z_moment_raw[target_order2_norm_rotate, 2, 2],
+                -z_moment_raw[target_order2_norm_rotate, 2, 1],
+                z_moment_raw[target_order2_norm_rotate, 2, 0],
+                jnp.conj(z_moment_raw[target_order2_norm_rotate, 2, 1]),
+                jnp.conj(z_moment_raw[target_order2_norm_rotate, 2, 2]),
+            ],
+            dtype=_config.COMPLEX_DTYPE,
+        )
     else:
-        abconj_coef = [
-            z_moment_raw[target_order2_norm_rotate, 1, 1],
-            -z_moment_raw[target_order2_norm_rotate, 1, 0],
-            -np.conj(z_moment_raw[target_order2_norm_rotate, 1, 1]),
-        ]
-        abconj_sol = eigen_root(abconj_coef)
-
-        k_re = np.real(abconj_sol)
-        k_im = np.imag(abconj_sol)
-        k_im2 = k_im**2
-        k_re2 = k_re**2
-        k_im3 = k_im**3
-        k_im4 = k_im**4
-        k_re4 = k_re**4
-
-        f20 = np.real(z_moment_raw[ind_real, 2, 0])
-        f21 = z_moment_raw[ind_real, 2, 1]
-        f22 = z_moment_raw[ind_real, 2, 2]
-
-        f21_im = np.imag(f21)
-        f21_re = np.real(f21)
-        f22_im = np.imag(f22)
-        f22_re = np.real(f22)
-
-        coef4 = (
-            4 * f22_re * k_im * (-1 + k_im2 - 3 * k_re2)
-            - 4 * f22_im * k_re * (1 - 3 * k_im2 + k_re2)
-            - 2 * f21_re * k_im * k_re * (-3 + k_im2 + k_re2)
-            + 2 * f20 * k_im * (-1 + k_im2 + k_re2)
-            + f21_im * (1 - 6 * k_im2 + k_im2**2 - k_re2**2)
-        )
-        coef3 = 2 * (
-            -4 * f22_im * (k_im + k_im3 - 3 * k_im * k_re2)
-            + f21_re * (-1 + k_im4 + 6 * k_re2 - k_re4)
-            + 2
-            * k_re
-            * (
-                f22_re * (2 + 6 * k_im2 - 2 * k_re2)
-                + f21_im * k_im * (-3 + k_im2 + k_re2)
-                + f20 * (-1 + k_im2 + k_re2)
-            )
+        abconj_coef = jnp.array(
+            [
+                z_moment_raw[target_order2_norm_rotate, 1, 1],
+                -z_moment_raw[target_order2_norm_rotate, 1, 0],
+                -jnp.conj(z_moment_raw[target_order2_norm_rotate, 1, 1]),
+            ],
+            dtype=_config.COMPLEX_DTYPE,
         )
 
-        bimbre_coef = np.array([coef4, coef3, np.zeros_like(coef4), coef3, -coef4]).T
+    abconj_sol = eigen_root(abconj_coef)
 
-        bimbre_sol_real = [np.real(eigen_root(bc)) for bc in bimbre_coef]
+    # Step 2: Compute a/b candidates (using JAX implementation)
+    a, b, is_valid = compute_ab_candidates_jax(z_moment_raw, abconj_sol, ind_real)
 
-        is_abs_bimre_good = [np.abs(x) > 1e-7 for x in bimbre_sol_real]
+    # Step 3: Filter and return (all JAX arrays)
+    a_flat = a[is_valid]
+    b_flat = b[is_valid]
 
-        a_list = []
-        b_list = []
-
-        for i in range(len(bimbre_sol_real)):
-            bre = 1 / np.sqrt(
-                (1 + k_im2[i] + k_re2[i]) * (1 + np.power(bimbre_sol_real[i], 2))
-            )
-            bim = bimbre_sol_real[i] * bre
-            b = np.vectorize(complex)(bre, bim)
-            a = abconj_sol[i] * np.conj(b)
-
-            a_list.append(a[is_abs_bimre_good[i]])
-            b_list.append(b[is_abs_bimre_good[i]])
-
-        ab_list = np.concatenate(
-            (np.concatenate(a_list).reshape(-1, 1), np.concatenate(b_list).reshape(-1, 1)),
-            axis=1,
-        )
-
-        return ab_list
+    if a_flat.size == 0:
+        return jnp.zeros((0, 2), dtype=_config.COMPLEX_DTYPE)
+    return jnp.stack([a_flat, b_flat], axis=1)

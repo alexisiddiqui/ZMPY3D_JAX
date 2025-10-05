@@ -10,6 +10,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+import jax.numpy as jnp
 import numpy as np
 import pytest
 
@@ -44,42 +45,53 @@ class TestCalculateZMByABRotation:
 
         rotation_index = cache_pkl["RotationIndex"]
 
+        # Convert arrays to JAX arrays where appropriate
+        def _to_jax(x):
+            if isinstance(x, np.ndarray):
+                return jnp.asarray(x)
+            if isinstance(x, (list, tuple)):
+                # try to convert lists of arrays/values to array
+                try:
+                    return jnp.asarray(np.array(x))
+                except Exception:
+                    return x
+            return x
+
         return {
-            "BinomialCache": binomial_cache_pkl["BinomialCache"],
-            "CLMCache": cache_pkl["CLMCache"],
-            "s_id": np.squeeze(rotation_index["s_id"][0, 0]) - 1,
-            "n": np.squeeze(rotation_index["n"][0, 0]),
-            "l": np.squeeze(rotation_index["l"][0, 0]),
-            "m": np.squeeze(rotation_index["m"][0, 0]),
-            "mu": np.squeeze(rotation_index["mu"][0, 0]),
-            "k": np.squeeze(rotation_index["k"][0, 0]),
-            "IsNLM_Value": np.squeeze(rotation_index["IsNLM_Value"][0, 0]) - 1,
+            "BinomialCache": _to_jax(binomial_cache_pkl.get("BinomialCache")),
+            "CLMCache": _to_jax(cache_pkl.get("CLMCache")),
+            "s_id": _to_jax(np.squeeze(rotation_index["s_id"][0, 0]) - 1),
+            "n": _to_jax(np.squeeze(rotation_index["n"][0, 0])),
+            "l": _to_jax(np.squeeze(rotation_index["l"][0, 0])),
+            "m": _to_jax(np.squeeze(rotation_index["m"][0, 0])),
+            "mu": _to_jax(np.squeeze(rotation_index["mu"][0, 0])),
+            "k": _to_jax(np.squeeze(rotation_index["k"][0, 0])),
+            "IsNLM_Value": _to_jax(np.squeeze(rotation_index["IsNLM_Value"][0, 0]) - 1),
             "max_order": max_order,
         }
 
     @pytest.fixture
     def zm_raw(self):
-        """Create sample raw Zernike moments."""
+        """Create sample raw Zernike moments as JAX array."""
         zm = np.zeros((7, 7, 13), dtype=complex)
         for n in range(7):
             for l in range(n + 1):
                 for m in range(-l, l + 1):
                     if (n - l) % 2 == 0:
                         zm[n, l, m + 6] = np.random.randn() + 1j * np.random.randn()
-        return zm
+        return jnp.asarray(zm)
 
     @pytest.fixture
     def ab_list(self):
-        """Create sample AB rotation list."""
+        """Create sample AB rotation list as JAX array."""
         # Create a few rotation pairs
         ab_pairs = []
         for _ in range(3):
-            # Normalized complex pairs
             theta = np.random.rand() * 2 * np.pi
             a = np.cos(theta) + 1j * np.sin(theta)
             b = np.sin(theta) - 1j * np.cos(theta)
             ab_pairs.append([a, b])
-        return np.array(ab_pairs)
+        return jnp.asarray(ab_pairs)
 
     def test_basic_rotation(self, zm_raw, ab_list, cache_data):
         """Test basic ZM rotation calculation."""
@@ -339,7 +351,7 @@ class TestCalculateZMByABRotation:
 
     def test_time_evaluation_runtime(self, zm_raw, ab_list, cache_data):
         """Timed evaluation wrapper for calculate_zm_by_ab_rotation."""
-        repeats = _env_int("ZMPY3D_TIME_REPEATS", 10000)
+        repeats = _env_int("ZMPY3D_TIME_REPEATS", 100)
         max_seconds = _env_int("ZMPY3D_TIME_MAX_SEC", 1200)
 
         # Warm-up

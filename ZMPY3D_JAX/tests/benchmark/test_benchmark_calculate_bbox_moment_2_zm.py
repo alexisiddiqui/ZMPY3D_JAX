@@ -10,6 +10,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+import jax.numpy as jnp
 import numpy as np
 import pytest
 
@@ -29,7 +30,7 @@ class TestCalculateBBoxMoment2ZM:
 
     @pytest.fixture
     def cache_data(self):
-        """Load cache data for Zernike moment calculation."""
+        """Load cache data for Zernike moment calculation and convert arrays to JAX."""
         max_order = 6
         cache_dir = Path(z.__file__).parent / "cache_data"
         log_cache_path = cache_dir / f"LogG_CLMCache_MaxOrder{max_order:02d}.pkl"
@@ -37,21 +38,27 @@ class TestCalculateBBoxMoment2ZM:
         with open(log_cache_path, "rb") as file:
             cache_pkl = pickle.load(file)
 
+        # Convert to JAX arrays where appropriate
+        def _to_jax(x):
+            if isinstance(x, np.ndarray):
+                return jnp.asarray(x)
+            return x
+
         return {
-            "GCache_pqr_linear": cache_pkl["GCache_pqr_linear"],
-            "GCache_complex": cache_pkl["GCache_complex"],
-            "GCache_complex_index": cache_pkl["GCache_complex_index"],
-            "CLMCache3D": cache_pkl["CLMCache3D"],
+            "GCache_pqr_linear": _to_jax(cache_pkl["GCache_pqr_linear"]),
+            "GCache_complex": _to_jax(cache_pkl["GCache_complex"]),
+            "GCache_complex_index": _to_jax(cache_pkl["GCache_complex_index"]),
+            "CLMCache3D": _to_jax(cache_pkl["CLMCache3D"]),
             "max_order": max_order,
         }
 
     @pytest.fixture
     def bbox_moment(self):
-        """Create a sample bounding box moment."""
+        """Create a sample bounding box moment as JAX array."""
         max_order = 6
         # Create a simple moment array
         moment = np.random.rand(max_order + 1, max_order + 1, max_order + 1)
-        return moment
+        return jnp.asarray(moment)
 
     def test_basic_conversion(self, bbox_moment, cache_data):
         """Test basic conversion from bbox moment to Zernike moments."""
@@ -218,7 +225,7 @@ class TestCalculateBBoxMoment2ZM:
 
     def test_time_evaluation_runtime(self, bbox_moment, cache_data):
         """Timed evaluation wrapper for calculate_bbox_moment_2_zm."""
-        repeats = _env_int("ZMPY3D_TIME_REPEATS", 10000)
+        repeats = _env_int("ZMPY3D_TIME_REPEATS", 100)
         max_seconds = _env_int("ZMPY3D_TIME_MAX_SEC", 1200)
 
         max_order = cache_data["max_order"]

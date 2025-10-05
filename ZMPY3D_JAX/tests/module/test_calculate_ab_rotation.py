@@ -5,6 +5,7 @@ Tests for calculate_ab_rotation and calculate_ab_rotation_all functions.
 import sys
 from pathlib import Path
 
+import chex
 import numpy as np
 import pytest
 
@@ -80,7 +81,7 @@ class TestCalculateABRotation:
         ab_array = z.calculate_ab_rotation(real_protein_zm, 2)
 
         # Should return a 2D array of [a, b] pairs
-        assert isinstance(ab_array, np.ndarray)
+        assert isinstance(ab_array, chex.Array)
         assert ab_array.ndim == 2
         assert ab_array.shape[1] == 2  # Each row has 2 elements (a, b)
         assert ab_array.shape[0] > 0  # At least one solution
@@ -89,7 +90,7 @@ class TestCalculateABRotation:
         """Test AB rotation calculation for order 3."""
         ab_array = z.calculate_ab_rotation(real_protein_zm, 3)
 
-        assert isinstance(ab_array, np.ndarray)
+        assert isinstance(ab_array, chex.Array)
         assert ab_array.ndim == 2
         assert ab_array.shape[1] == 2
 
@@ -128,7 +129,7 @@ class TestCalculateABRotation:
         try:
             ab_array = z.calculate_ab_rotation(zero_zm, 2)
             # If it doesn't raise an error, check that it returns something reasonable
-            assert isinstance(ab_array, np.ndarray)
+            assert isinstance(ab_array, chex.Array)
         except (np.linalg.LinAlgError, ValueError, ZeroDivisionError, RuntimeWarning):
             # Expected to raise an error for degenerate input
             pass

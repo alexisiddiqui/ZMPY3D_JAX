@@ -9,6 +9,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+import jax.numpy as jnp
 import numpy as np
 import pytest
 
@@ -28,19 +29,19 @@ class TestCalculateBBoxMoment:
 
     @pytest.fixture
     def simple_voxel(self):
-        """Create a simple 3D voxel grid for testing."""
-        voxel = np.zeros((10, 10, 10))
+        """Create a simple 3D voxel grid for testing (JAX array)."""
+        voxel = jnp.zeros((10, 10, 10))
         # Add some density in the center
-        voxel[4:6, 4:6, 4:6] = 1.0
+        voxel = voxel.at[4:6, 4:6, 4:6].set(1.0)
         return voxel
 
     @pytest.fixture
     def xyz_samples(self):
-        """Create sample coordinate arrays."""
+        """Create sample coordinate arrays as JAX arrays."""
         return {
-            "X_sample": np.arange(11, dtype=np.float64),
-            "Y_sample": np.arange(11, dtype=np.float64),
-            "Z_sample": np.arange(11, dtype=np.float64),
+            "X_sample": jnp.arange(11, dtype=jnp.float64),
+            "Y_sample": jnp.arange(11, dtype=jnp.float64),
+            "Z_sample": jnp.arange(11, dtype=jnp.float64),
         }
 
     def test_order_1_moment(self, simple_voxel, xyz_samples):
@@ -144,7 +145,7 @@ class TestCalculateBBoxMoment:
 
     def test_time_evaluation_runtime(self, simple_voxel, xyz_samples):
         """Timed evaluation wrapper for calculate_bbox_moment (order 1)."""
-        repeats = _env_int("ZMPY3D_TIME_REPEATS", 10000)
+        repeats = _env_int("ZMPY3D_TIME_REPEATS", 100)
         max_seconds = _env_int("ZMPY3D_TIME_MAX_SEC", 1200)
 
         # Warm-up

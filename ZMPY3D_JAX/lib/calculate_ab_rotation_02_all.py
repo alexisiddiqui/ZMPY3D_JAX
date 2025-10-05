@@ -8,113 +8,96 @@
 # This function is numerically intensive and would greatly benefit from JAX transformation, but requires careful handling of loops and conditional logic.
 
 
-from typing import List
-
+import chex
+import jax
+import jax.numpy as jnp
 import numpy as np
+
+from ZMPY3D_JAX import config as _config
 
 from .calculate_ab_candidates_jax import compute_ab_candidates_jax
 from .eigen_root import eigen_root
 
 
-def calculate_ab_rotation_02_all(
-    z_moment_raw: np.ndarray, target_order2_norm_rotate: int
-) -> List[np.ndarray]:
-    """Calculates all possible 'a' and 'b' Cayley-Klein rotation parameters across multiple orders.
-
-    This function extends the single-order normalization (calculate_ab_rotation_02) to compute
-    rotation parameters for all even orders from 2 to the maximum available in the input moments.
-    This enables multi-order Canterakis Norm descriptors as described in Guzenko et al. (2020).
-
-    Mathematical Background:
-    ------------------------
-    The complete Canterakis Norms (CNs) approach uses normalizations at multiple orders (n=2,3,4,5,...)
-    to create a more robust rotation-invariant descriptor. Each normalization order provides different
-    alignment properties:
-    - Order 2: Equivalent to principal component alignment
-    - Higher orders: Match progressively finer structural details
-
-    The BioZernike descriptor averages absolute values across multiple normalization orders
-    to handle symmetry ambiguities and create a versatile shape descriptor (see Fig 3d in reference).
-
-    Algorithm Steps:
-    ---------------
-    1. Determine initial rotation candidates from target_order2_norm_rotate (using abconj_sol)
-    2. For each even order from 2 to n_max:
-        a. Extract Zernike moments at that order
-        b. Compute polynomial coefficients (Equations 11-12 from reference)
-        c. Solve for rotation parameters for each candidate
-        d. Filter numerically stable solutions
-    3. Return list of parameter arrays, one per order
-
-    Args:
-        z_moment_raw (np.ndarray): 3D array of raw Zernike moments with shape (n_max+1, l_max+1, m_max+1)
-            where indices represent [n, l, m] quantum numbers
-        target_order2_norm_rotate (int): Initial target order for computing rotation candidates.
-            Must be >= 2 and determines the primary normalization constraint.
+def calculate_ab_rotation_02_all_jax(
+    z_moment_raw: jnp.ndarray, abconj_sol: jnp.ndarray
+) -> tuple[chex.Array, chex.Array, chex.Array]:
+    """
+    Fully vectorized JAX implementation - processes ALL ind_real in parallel.
 
     Returns:
-        List[np.ndarray]: List of arrays, one per ind_real order (2, 4, 6, ..., n_max).
-            Each array has shape (n_solutions, 2) with complex [a, b] rotation parameters.
-            Different orders may yield different numbers of valid solutions.
-
-    References:
-        Guzenko, D., Burley, S. K., & Duarte, J. M. (2020). Real time structural search of the
-        Protein Data Bank. PLoS Computational Biology, 16(7), e1007970.
-        https://doi.org/10.1371/journal.pcbi.1007970
-
-    See specifically:
-        - Figure 3d: Multi-order CN descriptor construction
-        - Methods section: "CNs of orders n = 2, 3, 4, 5 are computed..."
-        - Equations 11-12: Polynomial coefficient derivations
-
-    Notes:
-        - Only processes even ind_real orders (2, 4, 6, ...) due to Zernike moment properties
-        - Each order may have different numbers of solutions due to numerical filtering
-        - Solutions can be used for multi-order alignment or averaged for robust descriptors
-        - The nested function get_ab_list_by_ind_real() is JAX-compatible with vectorization
-
-    JAX Compatibility Notes:
-        - This function now uses a JAX-based implementation for candidate computation.
-        - The core logic is in `compute_ab_candidates_jax`.
+        a_all: shape (n_orders, n_abconj, n_roots)
+        b_all: shape (n_orders, n_abconj, n_roots)
+        is_valid_all: shape (n_orders, n_abconj, n_roots) - boolean mask
     """
+    # Compute all ind_real values (static shape)
+    max_order = z_moment_raw.shape[0]
+    ind_real_all = jnp.arange(2, max_order, 2)
+
+    # Vmap over ind_real dimension
+    def compute_for_order(ind_real):
+        return compute_ab_candidates_jax(z_moment_raw, abconj_sol, ind_real)
+
+    a_all, b_all, is_valid_all = jax.vmap(compute_for_order)(ind_real_all)
+
+    return a_all, b_all, is_valid_all
+
+
+def extract_valid_solutions(
+    a_all: np.ndarray, b_all: np.ndarray, is_valid_all: np.ndarray
+) -> list[np.ndarray]:
+    """Filter and format results OUTSIDE JIT (Python loop is fine here)."""
+    results = []
+
+    for i in range(len(a_all)):
+        # Flatten the (n_abconj, n_roots) dimensions
+        a_flat = a_all[i].ravel()
+        b_flat = b_all[i].ravel()
+        valid_flat = is_valid_all[i].ravel()
+
+        a_valid = a_flat[valid_flat]
+        b_valid = b_flat[valid_flat]
+
+        if a_valid.size == 0:
+            results.append(np.empty((0, 2), dtype=complex))
+        else:
+            results.append(np.stack([a_valid, b_valid], axis=1))
+
+    return results
+
+
+# Usage:
+def calculate_ab_rotation_02_all(
+    z_moment_raw: chex.Array, target_order2_norm_rotate: int
+) -> list[np.ndarray]:
+    """Public API maintaining compatibility with original function."""
+    z_moment_raw = jnp.asarray(z_moment_raw, dtype=_config.COMPLEX_DTYPE)
+
+    # Step 1: Compute abconj_sol (once, on CPU is fine)
     if target_order2_norm_rotate % 2 == 0:
-        abconj_coef = [
-            z_moment_raw[target_order2_norm_rotate, 2, 2],
-            -z_moment_raw[target_order2_norm_rotate, 2, 1],
-            z_moment_raw[target_order2_norm_rotate, 2, 0],
-            np.conj(z_moment_raw[target_order2_norm_rotate, 2, 1]),
-            np.conj(z_moment_raw[target_order2_norm_rotate, 2, 2]),
-        ]
-        abconj_sol = eigen_root(abconj_coef)
-        n_abconj = 4
+        abconj_coef = jnp.array(
+            [
+                z_moment_raw[target_order2_norm_rotate, 2, 2],
+                -z_moment_raw[target_order2_norm_rotate, 2, 1],
+                z_moment_raw[target_order2_norm_rotate, 2, 0],
+                jnp.conj(z_moment_raw[target_order2_norm_rotate, 2, 1]),
+                jnp.conj(z_moment_raw[target_order2_norm_rotate, 2, 2]),
+            ],
+            dtype=_config.COMPLEX_DTYPE,
+        )
     else:
-        abconj_coef = [
-            z_moment_raw[target_order2_norm_rotate, 1, 1],
-            -z_moment_raw[target_order2_norm_rotate, 1, 0],
-            -np.conj(z_moment_raw[target_order2_norm_rotate, 1, 1]),
-        ]
-        abconj_sol = eigen_root(abconj_coef)
-        n_abconj = 2
+        abconj_coef = jnp.array(
+            [
+                z_moment_raw[target_order2_norm_rotate, 1, 1],
+                -z_moment_raw[target_order2_norm_rotate, 1, 0],
+                -jnp.conj(z_moment_raw[target_order2_norm_rotate, 1, 1]),
+            ],
+            dtype=_config.COMPLEX_DTYPE,
+        )
 
-    def get_ab_list_by_ind_real(
-        z_moment_raw: np.ndarray, abconj_sol: np.ndarray, ind_real: int
-    ) -> np.ndarray:
-        """Computes a/b candidates for a single order using JAX-based implementation."""
-        a, b, is_valid = compute_ab_candidates_jax(z_moment_raw, abconj_sol, ind_real)
+    abconj_sol = eigen_root(abconj_coef)
+    # Step 2: JIT-compiled parallel processing of ALL orders
+    a_all, b_all, is_valid_all = calculate_ab_rotation_02_all_jax(z_moment_raw, abconj_sol)
 
-        # Filter invalid solutions and reshape
-        a_flat = a[is_valid]
-        b_flat = b[is_valid]
-
-        if a_flat.size == 0:
-            return np.empty((0, 2), dtype=complex)
-
-        return np.stack([a_flat, b_flat], axis=1)
-
-    ind_real_all = np.arange(2, z_moment_raw.shape[0], 2)
-    ab_list_all = [None] * len(ind_real_all)
-
-    for i, ind_real in enumerate(ind_real_all):
-        ab_list_all[i] = get_ab_list_by_ind_real(z_moment_raw, abconj_sol, ind_real)
-
-    return ab_list_all
+    # Step 3: Filter outside JIT (dynamic shapes are fine here)
+    return extract_valid_solutions(np.array(a_all), np.array(b_all), np.array(is_valid_all))

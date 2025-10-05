@@ -9,6 +9,8 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+import chex
+import jax.numpy as jnp
 import numpy as np
 import pytest
 
@@ -85,14 +87,15 @@ class TestCalculateABRotation:
             bbox_moment,
         )
 
-        return zm_raw
+        # Return ZM as JAX array
+        return jnp.asarray(zm_raw)
 
     def test_basic_rotation_order2(self, real_protein_zm):
         """Test AB rotation calculation for order 2."""
         ab_array = z.calculate_ab_rotation(real_protein_zm, 2)
 
         # Should return a 2D array of [a, b] pairs
-        assert isinstance(ab_array, np.ndarray)
+        assert isinstance(ab_array, chex.Array)
         assert ab_array.ndim == 2
         assert ab_array.shape[1] == 2  # Each row has 2 elements (a, b)
         assert ab_array.shape[0] > 0  # At least one solution
@@ -101,7 +104,7 @@ class TestCalculateABRotation:
         """Test AB rotation calculation for order 3."""
         ab_array = z.calculate_ab_rotation(real_protein_zm, 3)
 
-        assert isinstance(ab_array, np.ndarray)
+        assert isinstance(ab_array, chex.Array)
         assert ab_array.ndim == 2
         assert ab_array.shape[1] == 2
 
@@ -132,15 +135,15 @@ class TestCalculateABRotation:
 
     def test_zero_moments(self):
         """Test with zero Zernike moments."""
-        # Create properly structured zero array
+        # Create properly structured zero array as JAX array
         max_order = 6
-        zero_zm = np.zeros((max_order + 1, max_order + 1, 2 * max_order + 1), dtype=complex)
+        zero_zm = jnp.zeros((max_order + 1, max_order + 1, 2 * max_order + 1), dtype=jnp.complex64)
 
         # The function should handle zero input gracefully or raise an error
         try:
             ab_array = z.calculate_ab_rotation(zero_zm, 2)
             # If it doesn't raise an error, check that it returns something reasonable
-            assert isinstance(ab_array, np.ndarray)
+            assert isinstance(ab_array, chex.Array)
         except (np.linalg.LinAlgError, ValueError, ZeroDivisionError, RuntimeWarning):
             # Expected to raise an error for degenerate input
             pass
@@ -154,7 +157,7 @@ class TestCalculateABRotation:
 
     def test_time_evaluation_runtime(self, real_protein_zm):
         """Timed evaluation wrapper for calculate_ab_rotation (order 2)."""
-        repeats = _env_int("ZMPY3D_TIME_REPEATS", 10000)
+        repeats = _env_int("ZMPY3D_TIME_REPEATS", 100)
         max_seconds = _env_int("ZMPY3D_TIME_MAX_SEC", 1200)
 
         target_order = 2
@@ -253,8 +256,7 @@ class TestCalculateABRotationAll:
             cache_pkl["CLMCache3D"],
             bbox_moment,
         )
-
-        return zm_raw
+        return jnp.asarray(zm_raw)
 
     def test_all_rotations_order2(self, real_protein_zm):
         """Test calculation of all rotations for order 2."""

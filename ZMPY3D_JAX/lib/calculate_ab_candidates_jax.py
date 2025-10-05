@@ -1,7 +1,6 @@
 import chex
 import jax
 import jax.numpy as jnp
-import numpy as np
 
 from ZMPY3D_JAX import config as _config
 from ZMPY3D_JAX.lib.eigen_root import batched_eigen_root
@@ -9,7 +8,7 @@ from ZMPY3D_JAX.lib.eigen_root import batched_eigen_root
 
 def compute_ab_candidates_jax(
     z_moment_raw: chex.Array, abconj_sol: chex.Array, ind_real: int
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[chex.Array, chex.Array, chex.Array]:
     """
     Compute ALL candidate a/b values with validity mask.
     Returns fixed-size arrays - filtering happens outside JIT.
@@ -67,4 +66,4 @@ def compute_ab_candidates_jax(
     is_valid = jnp.abs(bimbre_sol_real) > 1e-7
 
     # Return as numpy arrays for easier downstream processing
-    return np.array(a), np.array(b), np.array(is_valid)
+    return a, b, is_valid
