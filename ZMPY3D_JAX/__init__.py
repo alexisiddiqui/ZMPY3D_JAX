@@ -43,3 +43,41 @@ from .lib.get_pdb_xyz_ca02                      import get_pdb_xyz_ca02         
 # # used for EM, depends on MRCFILE, hence not imported
 # from .lib.Voxel3D2MRCFile                   import Voxel3D2MRCFile                      as Voxel3D2MRCFile
 
+# Add to __init__.py or a new config.py
+
+def configure_for_scientific_computing(
+    enable_x64: bool = True,
+    platform: str = 'CPU',  # None = auto, 'cpu', 'gpu', 'tpu'
+):
+    """
+    Configure JAX for scientific computing with ZMPY3D_JAX.
+    
+    Parameters
+    ----------
+    enable_x64 : bool, default=True
+        Enable float64 precision. Critical for accurate Zernike moment calculations.
+    platform : str, optional
+        Force specific platform ('cpu', 'gpu', 'tpu'). None uses JAX default.
+    
+    Notes
+    -----
+    This function should be called ONCE at program startup, before any JAX operations.
+    Float64 precision is strongly recommended for ZMPY3D_JAX to avoid numerical errors
+    in iterative algorithms and accumulations.
+    
+    Examples
+    --------
+    >>> import ZMPY3D_JAX as z
+    >>> z.configure_for_scientific_computing()  # Recommended
+    >>> # Now use the library...
+    """
+    import jax
+    
+    if enable_x64:
+        jax.config.update('jax_enable_x64', True)
+        print("JAX configured for float64 precision")
+    
+    if platform is not None:
+        jax.config.update('jax_platform_name', platform.lower())
+        print(f"JAX configured for platform: {platform}")
+

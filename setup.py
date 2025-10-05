@@ -33,6 +33,8 @@ setup(
         "ipykernel",
         "py3Dmol",
         "pytest",
+        "jax>=0.7.1",
+        "jaxlib",
     ],
     include_package_data=True,  # for the cache
 )
