@@ -2,12 +2,13 @@
 Tests for calculate_ab_rotation and calculate_ab_rotation_all functions.
 """
 
-import sys
-from pathlib import Path
+import logging
 import os
+import sys
 import time
 from datetime import datetime
-import logging
+from pathlib import Path
+
 import numpy as np
 import pytest
 
@@ -153,7 +154,7 @@ class TestCalculateABRotation:
 
     def test_time_evaluation_runtime(self, real_protein_zm):
         """Timed evaluation wrapper for calculate_ab_rotation (order 2)."""
-        repeats = _env_int("ZMPY3D_TIME_REPEATS", 100)
+        repeats = _env_int("ZMPY3D_TIME_REPEATS", 10000)
         max_seconds = _env_int("ZMPY3D_TIME_MAX_SEC", 1200)
 
         target_order = 2

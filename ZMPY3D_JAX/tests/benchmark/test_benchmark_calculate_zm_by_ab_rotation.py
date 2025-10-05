@@ -2,17 +2,14 @@
 Tests for calculate_zm_by_ab_rotation function.
 """
 
+import logging
 import os
 import pickle
 import sys
 import time
 from datetime import datetime
 from pathlib import Path
-import os
-import time
-from datetime import datetime
-import logging
-import logging
+
 import numpy as np
 import pytest
 
@@ -342,7 +339,7 @@ class TestCalculateZMByABRotation:
 
     def test_time_evaluation_runtime(self, zm_raw, ab_list, cache_data):
         """Timed evaluation wrapper for calculate_zm_by_ab_rotation."""
-        repeats = _env_int("ZMPY3D_TIME_REPEATS", 100)
+        repeats = _env_int("ZMPY3D_TIME_REPEATS", 10000)
         max_seconds = _env_int("ZMPY3D_TIME_MAX_SEC", 1200)
 
         # Warm-up

@@ -2,12 +2,13 @@
 Tests for calculate_box_by_grid_width function.
 """
 
-import sys
-from pathlib import Path
+import logging
 import os
+import sys
 import time
 from datetime import datetime
-import logging
+from pathlib import Path
+
 import numpy as np
 import pytest
 
@@ -218,7 +219,7 @@ class TestCalculateBoxByGridWidth:
 
     def test_time_evaluation_runtime(self, param, residue_box_cache):
         """Timed evaluation wrapper for residue box access (uses same data repeatedly)."""
-        repeats = _env_int("ZMPY3D_TIME_REPEATS", 100)
+        repeats = _env_int("ZMPY3D_TIME_REPEATS", 10000)
         max_seconds = _env_int("ZMPY3D_TIME_MAX_SEC", 1200)
 
         # Use an existing box (same array every iteration)

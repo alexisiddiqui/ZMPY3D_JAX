@@ -35,6 +35,7 @@ setup(
         "pytest",
         "jax>=0.7.1",
         "jaxlib",
+        "chex",
     ],
     include_package_data=True,  # for the cache
 )

@@ -2,12 +2,13 @@
 Tests for calculate_bbox_moment function.
 """
 
-import sys
-from pathlib import Path
+import logging
 import os
+import sys
 import time
 from datetime import datetime
-import logging
+from pathlib import Path
+
 import numpy as np
 import pytest
 
@@ -134,7 +135,7 @@ class TestCalculateBBoxMoment:
 
     def test_time_evaluation_runtime(self, simple_voxel, xyz_samples):
         """Timed evaluation wrapper for calculate_bbox_moment (order 1)."""
-        repeats = _env_int("ZMPY3D_TIME_REPEATS", 100)
+        repeats = _env_int("ZMPY3D_TIME_REPEATS", 10000)
         max_seconds = _env_int("ZMPY3D_TIME_MAX_SEC", 1200)
 
         # Warm-up
@@ -162,7 +163,9 @@ class TestCalculateBBoxMoment:
             log_file.write(f"  Max seconds: {max_seconds}\n")
             log_file.write("\nInput:\n")
             log_file.write(f"  Voxel shape: {simple_voxel.shape}\n")
-            log_file.write(f"  XYZ sample sizes: {{'X': {len(xyz_samples['X_sample'])}, 'Y': {len(xyz_samples['Y_sample'])}, 'Z': {len(xyz_samples['Z_sample'])}}}\n")
+            log_file.write(
+                f"  XYZ sample sizes: {{'X': {len(xyz_samples['X_sample'])}, 'Y': {len(xyz_samples['Y_sample'])}, 'Z': {len(xyz_samples['Z_sample'])}}}\n"
+            )
             log_file.write("\nResults:\n")
             log_file.write(f"  Total time: {elapsed:.6f}s\n")
             log_file.write(f"  Time per iteration: {elapsed / repeats * 1000:.6f}ms\n")

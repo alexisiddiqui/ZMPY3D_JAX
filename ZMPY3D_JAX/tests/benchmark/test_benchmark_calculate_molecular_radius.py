@@ -2,12 +2,13 @@
 Tests for calculate_molecular_radius function.
 """
 
-import sys
-from pathlib import Path
+import logging
 import os
+import sys
 import time
 from datetime import datetime
-import logging
+from pathlib import Path
+
 import numpy as np
 import pytest
 
@@ -215,7 +216,7 @@ class TestCalculateMolecularRadius:
 
     def test_time_evaluation_runtime(self, centered_mass):
         """Timed evaluation wrapper for calculate_molecular_radius."""
-        repeats = _env_int("ZMPY3D_TIME_REPEATS", 100)
+        repeats = _env_int("ZMPY3D_TIME_REPEATS", 10000)
         max_seconds = _env_int("ZMPY3D_TIME_MAX_SEC", 1200)
 
         center = np.array([5.0, 5.0, 5.0])

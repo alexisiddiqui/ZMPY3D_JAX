@@ -2,13 +2,14 @@
 Tests for calculate_bbox_moment_2_zm function.
 """
 
+import logging
+import os
 import pickle
 import sys
-from pathlib import Path
-import os
 import time
 from datetime import datetime
-import logging
+from pathlib import Path
+
 import numpy as np
 import pytest
 
@@ -217,7 +218,7 @@ class TestCalculateBBoxMoment2ZM:
 
     def test_time_evaluation_runtime(self, bbox_moment, cache_data):
         """Timed evaluation wrapper for calculate_bbox_moment_2_zm."""
-        repeats = _env_int("ZMPY3D_TIME_REPEATS", 100)
+        repeats = _env_int("ZMPY3D_TIME_REPEATS", 10000)
         max_seconds = _env_int("ZMPY3D_TIME_MAX_SEC", 1200)
 
         max_order = cache_data["max_order"]
