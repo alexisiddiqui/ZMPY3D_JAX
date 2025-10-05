@@ -5,6 +5,7 @@ Tests for fill_voxel_by_weight_density function.
 import sys
 from pathlib import Path
 
+import chex
 import numpy as np
 import pytest
 
@@ -52,7 +53,9 @@ class TestFillVoxelByWeightDensity:
         """Sample amino acid names for multiple atoms."""
         return ["ALA", "GLY", "VAL", "LEU"]
 
-    def test_single_atom_filling(self, param, residue_box_cache, sample_coords_single_atom, sample_aa_single_atom):
+    def test_single_atom_filling(
+        self, param, residue_box_cache, sample_coords_single_atom, sample_aa_single_atom
+    ):
         grid_width = 1.0
         voxel3d, corner_xyz = z.fill_voxel_by_weight_density(
             sample_coords_single_atom,
@@ -62,8 +65,8 @@ class TestFillVoxelByWeightDensity:
             residue_box_cache[grid_width],
         )
 
-        assert isinstance(voxel3d, np.ndarray)
-        assert isinstance(corner_xyz, np.ndarray)
+        assert isinstance(voxel3d, chex.Array)
+        assert isinstance(corner_xyz, chex.Array)
         assert voxel3d.ndim == 3
         assert corner_xyz.shape == (3,)
 
@@ -75,7 +78,9 @@ class TestFillVoxelByWeightDensity:
         density_center = np.array(np.where(voxel3d == np.max(voxel3d))) * grid_width + corner_xyz
         assert np.allclose(density_center.mean(axis=1), sample_coords_single_atom[0], atol=2.0)
 
-    def test_multiple_atoms_filling(self, param, residue_box_cache, sample_coords_multiple_atoms, sample_aa_multiple_atoms):
+    def test_multiple_atoms_filling(
+        self, param, residue_box_cache, sample_coords_multiple_atoms, sample_aa_multiple_atoms
+    ):
         """Test filling with multiple atoms of different types."""
         grid_width = 1.0
         voxel3d, corner_xyz = z.fill_voxel_by_weight_density(
@@ -109,7 +114,9 @@ class TestFillVoxelByWeightDensity:
         assert corner_xyz.shape == (3,)
         assert np.all(np.isnan(corner_xyz)) or np.all(corner_xyz == 0)
 
-    def test_different_grid_width(self, param, residue_box_cache, sample_coords_single_atom, sample_aa_single_atom):
+    def test_different_grid_width(
+        self, param, residue_box_cache, sample_coords_single_atom, sample_aa_single_atom
+    ):
         """Test with a different grid width."""
         grid_width = 0.5
         voxel3d, corner_xyz = z.fill_voxel_by_weight_density(
@@ -145,7 +152,9 @@ class TestFillVoxelByWeightDensity:
         # This would require calculating the expected sum for ASP, which is complex.
         # For now, just checking that density is generated is sufficient.
 
-    def test_deterministic_output(self, param, residue_box_cache, sample_coords_multiple_atoms, sample_aa_multiple_atoms):
+    def test_deterministic_output(
+        self, param, residue_box_cache, sample_coords_multiple_atoms, sample_aa_multiple_atoms
+    ):
         """Test that the function produces deterministic output."""
         grid_width = 1.0
 
@@ -168,7 +177,9 @@ class TestFillVoxelByWeightDensity:
         np.testing.assert_array_equal(voxel3d_1, voxel3d_2)
         np.testing.assert_array_equal(corner_xyz_1, corner_xyz_2)
 
-    def test_voxel_dimensions_and_corner(self, param, residue_box_cache, sample_coords_single_atom, sample_aa_single_atom):
+    def test_voxel_dimensions_and_corner(
+        self, param, residue_box_cache, sample_coords_single_atom, sample_aa_single_atom
+    ):
         """Test that voxel dimensions and corner_xyz are reasonable."""
         grid_width = 1.0
         voxel3d, corner_xyz = z.fill_voxel_by_weight_density(
@@ -195,10 +206,18 @@ class TestFillVoxelByWeightDensity:
         gly_coords = np.array([[0.0, 0.0, 0.0]])
 
         voxel_ala, _ = z.fill_voxel_by_weight_density(
-            ala_coords, ["ALA"], param["residue_weight_map"], grid_width, residue_box_cache[grid_width]
+            ala_coords,
+            ["ALA"],
+            param["residue_weight_map"],
+            grid_width,
+            residue_box_cache[grid_width],
         )
         voxel_gly, _ = z.fill_voxel_by_weight_density(
-            gly_coords, ["GLY"], param["residue_weight_map"], grid_width, residue_box_cache[grid_width]
+            gly_coords,
+            ["GLY"],
+            param["residue_weight_map"],
+            grid_width,
+            residue_box_cache[grid_width],
         )
 
         sum_ala = np.sum(voxel_ala)

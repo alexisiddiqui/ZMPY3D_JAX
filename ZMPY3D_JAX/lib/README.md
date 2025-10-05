@@ -19,7 +19,16 @@ This directory contains the core computational library for ZMPY3D_JAX. Files are
 
 These files contain the main mathematical computations and are critical for JAX conversion to achieve performance gains.
 
-#### ⏳ `calculate_bbox_moment06.py`
+#### ✅ `calculate_ab_candidates_jax.py`
+**Purpose**: Computes ALL candidate a/b values with validity mask.
+**Conversion Priority**: ⭐⭐⭐⭐⭐ (Critical - hot path)
+**JAX Conversion Notes**:
+- New file, fully implemented in JAX.
+- Used by `calculate_ab_rotation_02.py` and `calculate_ab_rotation_02_all.py`.
+
+---
+
+#### ✅ `calculate_bbox_moment06.py`
 **Purpose**: Calculates 3D bounding box moments using tensor operations  
 **Conversion Priority**: ⭐⭐⭐⭐⭐ (Critical - hot path)  
 **NumPy Operations**:
@@ -32,13 +41,15 @@ These files contain the main mathematical computations and are critical for JAX 
 - Array slicing and transposition
 
 **JAX Conversion Notes**:
-- Replace with `jax.numpy` equivalents
+- Fully converted to JAX.
+- Uses `jnp.zeros`, `jnp.diff`, `jnp.power`, `jnp.arange`, `jnp.tensordot`, `jnp.meshgrid`, `jnp.transpose`.
+- Immutable array updates handled with `.at[]` syntax.
 - `np.tensordot` → `jnp.tensordot` (major speedup expected)
 - Consider `jax.jit` for entire function
 
 ---
 
-#### ⏳ `calculate_bbox_moment_2_zm05.py`
+#### 🔄 `calculate_bbox_moment_2_zm05.py`
 **Purpose**: Converts bounding box moments to Zernike moments  
 **Conversion Priority**: ⭐⭐⭐⭐⭐ (Critical - hot path)  
 **NumPy Operations**:
@@ -66,7 +77,7 @@ This `np.add.at` operation performs an in-place addition, which is not directly 
 
 ---
 
-#### ⏳ `calculate_zm_by_ab_rotation01.py`
+#### 🔄 `calculate_zm_by_ab_rotation01.py`
 **Purpose**: Calculates rotated Zernike moments from rotation coefficients  
 **Conversion Priority**: ⭐⭐⭐⭐⭐ (Critical - hot path)  
 **NumPy Operations**:
@@ -97,7 +108,7 @@ This example shows both a loop that needs vectorization (e.g., with `jax.lax.sca
 
 ---
 
-#### ⏳ `calculate_ab_rotation_02.py`
+#### ✅ `calculate_ab_rotation_02.py`
 **Purpose**: Computes rotation coefficients (a, b) for a specific order  
 **Conversion Priority**: ⭐⭐⭐⭐ (High priority)  
 **NumPy Operations**:
@@ -110,6 +121,7 @@ This example shows both a loop that needs vectorization (e.g., with `jax.lax.sca
 - Polynomial root finding via `eigen_root()`
 
 **JAX Conversion Notes**:
+- Uses `compute_ab_candidates_jax` for core logic, which is JAX-compatible.
 - `np.vectorize(complex)` → Direct JAX complex construction
 - Loop over solutions → `jax.lax.scan()` or `jax.vmap()`
 - Filter operations → `jnp.where()` with masking
@@ -130,7 +142,7 @@ This illustrates the need to vectorize loops (e.g., with `jax.lax.scan` or `jax.
 
 ---
 
-#### ⏳ `calculate_ab_rotation_02_all.py`
+#### ✅ `calculate_ab_rotation_02_all.py`
 **Purpose**: Computes rotation coefficients for all orders  
 **Conversion Priority**: ⭐⭐⭐⭐ (High priority)  
 **NumPy Operations**:
@@ -139,6 +151,7 @@ This illustrates the need to vectorize loops (e.g., with `jax.lax.scan` or `jax.
 - List concatenation
 
 **JAX Conversion Notes**:
+- Uses `compute_ab_candidates_jax` for core logic, which is JAX-compatible.
 - Nested function → Ensure JAX compatibility
 - Outer loop over orders → `jax.vmap()` if possible
 - Share conversion strategy with `calculate_ab_rotation_02.py`
@@ -157,7 +170,7 @@ This highlights the challenge of vectorizing both the outer loop over different 
 
 ---
 
-#### ⏳ `eigen_root.py`
+#### ✅ `eigen_root.py`
 **Purpose**: Polynomial root finding via eigenvalue decomposition  
 **Conversion Priority**: ⭐⭐⭐⭐ (High priority)  
 **NumPy Operations**:
@@ -167,13 +180,15 @@ This highlights the challenge of vectorizing both the outer loop over different 
 - Array assignment
 
 **JAX Conversion Notes**:
+- Fully converted to JAX.
+- Uses `jnp.asarray`, `jnp.diag`, `jnp.linalg.eigvals`, `jax.lax.cond`, and `jax.vmap`.
 - `np.diag()` → `jnp.diag()`
 - `np.linalg.eigvals()` → `jnp.linalg.eigvals()` (GPU acceleration available)
 - Direct conversion, minimal changes needed
 
 ---
 
-#### ⏳ `calculate_molecular_radius03.py`
+#### ✅ `calculate_molecular_radius03.py`
 **Purpose**: Computes average and maximum molecular radii  
 **Conversion Priority**: ⭐⭐⭐ (Medium priority)  
 **NumPy Operations**:
@@ -185,13 +200,15 @@ This highlights the challenge of vectorizing both the outer loop over different 
 - Element-wise power (`**2`)
 
 **JAX Conversion Notes**:
+- Fully converted to JAX.
+- Uses `jnp.asarray`, `jnp.where`, `jnp.stack`, `jnp.sum`, `jnp.sqrt`, `jnp.max`, and `jnp.std`.
 - Direct `jax.numpy` conversion
 - Boolean indexing well supported
 - All operations efficiently implemented in JAX
 
 ---
 
-#### ⏳ `get_mean_invariant03.py`
+#### ✅ `get_mean_invariant03.py`
 **Purpose**: Calculates mean and std of Zernike moment arrays  
 **Conversion Priority**: ⭐⭐⭐ (Medium priority)  
 **NumPy Operations**:
@@ -201,13 +218,15 @@ This highlights the challenge of vectorizing both the outer loop over different 
 - `np.std()` - Standard deviation (ddof=1)
 
 **JAX Conversion Notes**:
+- Fully converted to JAX.
+- Uses `jnp.stack`, `jnp.abs`, `jnp.mean`, and `jnp.std`.
 - Direct `jax.numpy` conversion
 - `ddof` parameter supported in `jnp.std()`
 - Consider `jax.jit` for performance
 
 ---
 
-#### ⏳ `get_ca_distance_info.py`
+#### ✅ `get_ca_distance_info.py`
 **Purpose**: Calculates geometric descriptors from CA coordinates  
 **Conversion Priority**: ⭐⭐⭐ (Medium priority)  
 **NumPy Operations**:
@@ -218,13 +237,15 @@ This highlights the challenge of vectorizing both the outer loop over different 
 - Statistical moments (skewness, kurtosis)
 
 **JAX Conversion Notes**:
+- Fully converted to JAX.
+- Uses `jnp.mean`, `jnp.sqrt`, `jnp.sum`, `jnp.percentile`, `jnp.std`, and `jnp.where`.
 - Most operations have direct JAX equivalents
 - `np.percentile()` → `jnp.percentile()`
 - Consider `jax.jit` for entire function
 
 ---
 
-#### ⏳ `get_3dzd_121_descriptor02.py`
+#### 🔄 `get_3dzd_121_descriptor02.py`
 **Purpose**: Calculates 3DZD 121 rotation-invariant descriptor  
 **Conversion Priority**: ⭐⭐⭐ (Medium priority)  
 **NumPy Operations**:
@@ -244,7 +265,7 @@ This highlights the challenge of vectorizing both the outer loop over different 
 
 ### 🔧 Utility Functions (Mixed Priority)
 
-#### ⏳ `fill_voxel_by_weight_density04.py`
+#### 🔄 `fill_voxel_by_weight_density04.py`
 **Purpose**: Fills 3D voxel grid with density values  
 **Conversion Priority**: ⭐⭐⭐⭐ (High - hot path but challenging)  
 **NumPy Operations**:
@@ -276,7 +297,7 @@ This in-place array modification is a common pattern in NumPy but is problematic
 
 ---
 
-#### ⏳ `calculate_box_by_grid_width.py`
+#### 🔄 `calculate_box_by_grid_width.py`
 **Purpose**: Generates Gaussian density boxes for residues  
 **Conversion Priority**: ⭐⭐⭐ (Medium priority)  
 **NumPy Operations**:
@@ -308,7 +329,7 @@ This loop iterates through residues, and the `residue_unit_box` can have differe
 
 ---
 
-#### ⏳ `get_residue_gaussian_density_cache02.py`
+#### 🔄 `get_residue_gaussian_density_cache02.py`
 **Purpose**: Pre-calculates Gaussian density caches  
 **Conversion Priority**: ⭐⭐ (Lower - preprocessing step)  
 **NumPy Operations**:
@@ -324,7 +345,7 @@ This loop iterates through residues, and the `residue_unit_box` can have differe
 
 ---
 
-#### ⏳ `get_bbox_moment_xyz_sample01.py`
+#### ✅ `get_bbox_moment_xyz_sample01.py`
 **Purpose**: Generates normalized sample coordinates  
 **Conversion Priority**: ⭐⭐ (Lower priority)  
 **NumPy Operations**:
@@ -332,12 +353,14 @@ This loop iterates through residues, and the `residue_unit_box` can have differe
 - Element-wise subtraction and division
 
 **JAX Conversion Notes**:
+- Fully converted to JAX.
+- Uses `jnp.arange`, subtraction, and division.
 - Trivial conversion to `jax.numpy`
 - Direct replacement
 
 ---
 
-#### ⏳ `get_transform_matrix_from_ab_list02.py`
+#### ✅ `get_transform_matrix_from_ab_list02.py`
 **Purpose**: Constructs 4x4 transformation matrix from a, b coefficients  
 **Conversion Priority**: ⭐⭐⭐ (Medium priority)  
 **NumPy Operations**:
@@ -347,6 +370,8 @@ This loop iterates through residues, and the `residue_unit_box` can have differe
 - Element-wise operations
 
 **JAX Conversion Notes**:
+- Fully converted to JAX.
+- Uses `jnp.array`, `jnp.real`, `jnp.imag`, `jnp.reshape`, `jnp.zeros`, `.at[]`, and `jnp.linalg.inv`.
 - Direct conversion to `jax.numpy`
 - `np.linalg.inv()` → `jnp.linalg.inv()` (GPU acceleration)
 - Complex operations well supported
@@ -355,59 +380,12 @@ This loop iterates through residues, and the `residue_unit_box` can have differe
 
 #### ❌ `get_total_residue_weight.py`
 **Purpose**: Calculates total residue weight  
-**Conversion Priority**: ⭐ (Low - could vectorize but not critical)  
-**NumPy Operations**:
-- None (pure Python loop with dictionary lookup)
-
-**JAX Conversion Notes**:
-- Could vectorize with one-hot encoding + array lookup
-- Or keep as-is (not performance critical)
-- If converting: Use `jnp.take()` with encoded amino acids
-
-**JAX Conversion Challenges**:
-- ⚠️ Dictionary lookup not directly JAX-compatible
-- Consider array-based lookup table
-
-**Code Example (Python)**:
-```python
-# Loop with dictionary lookup in get_total_residue_weight.py
-for aa_name in aa_name_list:
-    total_weight += residue_weight_map.get(aa_name, default_weight)
-```
-Direct dictionary lookups within JAX-transformed functions are not efficient. This pattern would ideally be refactored to use an array-based lookup table (e.g., by mapping amino acid names to integer indices and then using `jax.numpy.take`) for JAX compatibility and performance.
+**Conversion Priority**: ⭐ (Low - not applicable)  
+**Notes**: Returns a single float (aggregate total). No JAX conversion required.
 
 ---
 
-### 📊 Static Data / Configuration (No Conversion Needed)
-
-#### ❌ `get_residue_weight_map01.py`
-**Purpose**: Returns static residue weight dictionary  
-**Conversion**: Not applicable (static data)  
-**JAX Notes**: Convert dictionary to JAX array for use in JAX functions
-
----
-
-#### ❌ `get_residue_radius_map01.py`
-**Purpose**: Returns static residue radius dictionary  
-**Conversion**: Not applicable (static data)  
-**JAX Notes**: Convert dictionary to JAX array for use in JAX functions
-
----
-
-#### ❌ `get_global_parameter02.py`
-**Purpose**: Initializes global parameters dictionary  
-**Conversion**: Not applicable (configuration)  
-**NumPy Operations**:
-- `math.pi` and `**` for constant calculation
-
-**JAX Notes**: 
-- Use `jnp.pi` for constant calculation
-- Keep as parameter dictionary
-- Convert weight/radius maps to arrays
-
----
-
-#### ❌ `get_descriptor_property.py`
+#### ⏳ `get_descriptor_property.py`
 **Purpose**: Returns descriptor weights and indices  
 **Conversion**: Not applicable (static configuration)  
 **NumPy Operations**:
@@ -470,27 +448,28 @@ Direct dictionary lookups within JAX-transformed functions are not efficient. Th
 3. ✅ `calculate_molecular_radius03.py` - Moderate complexity
 4. ✅ `get_mean_invariant03.py` - Simple reduction operations
 5. ✅ `get_ca_distance_info.py` - Statistical operations
+6. ✅ `calculate_ab_candidates_jax.py` - New JAX implementation
 
 ### Phase 2: Zernike Moments (Weeks 4-6)
-6. ✅ `calculate_bbox_moment06.py` - Critical tensordot operations
-7. ✅ `calculate_bbox_moment_2_zm05.py` - Handle `np.add.at` challenge
-8. ✅ `get_3dzd_121_descriptor02.py` - Descriptor calculation
+7. ✅ `calculate_bbox_moment06.py` - Critical tensordot operations
+8. 🔄 `calculate_bbox_moment_2_zm05.py` - Handle `np.add.at` challenge
+9. 🔄 `get_3dzd_121_descriptor02.py` - Descriptor calculation
 
 ### Phase 3: Rotation Calculations (Weeks 7-9)
-9. ✅ `calculate_ab_rotation_02.py` - Complex loop vectorization
-10. ✅ `calculate_ab_rotation_02_all.py` - Extend to all orders
-11. ✅ `calculate_zm_by_ab_rotation01.py` - Critical rotation application
+10. ✅ `calculate_ab_rotation_02.py` - Complex loop vectorization
+11. ✅ `calculate_ab_rotation_02_all.py` - Extend to all orders
+12. 🔄 `calculate_zm_by_ab_rotation01.py` - Critical rotation application
 
 ### Phase 4: Voxelization (Weeks 10-12)
-12. ✅ `calculate_box_by_grid_width.py` - Gaussian box generation
-13. ✅ `fill_voxel_by_weight_density04.py` - Most challenging conversion
-14. ✅ `get_residue_gaussian_density_cache02.py` - Cache generation
+13. 🔄 `calculate_box_by_grid_width.py` - Gaussian box generation
+14. 🔄 `fill_voxel_by_weight_density04.py` - Most challenging conversion
+15. 🔄 `get_residue_gaussian_density_cache02.py` - Cache generation
 
 ### Phase 5: Utilities & Optimization (Weeks 13-14)
-15. ✅ `get_transform_matrix_from_ab_list02.py` - Matrix operations
-16. ✅ `get_total_residue_weight.py` - Optional vectorization
-17. ✅ Convert static data dictionaries to arrays
-18. ✅ End-to-end testing and optimization
+1. ✅ `get_transform_matrix_from_ab_list02.py` - Matrix operations
+2. ❌ `get_total_residue_weight.py` - Returns float; no conversion needed
+3. ⏳ `get_descriptor_property.py` - Convert static data dictionaries to arrays
+4. ✅ End-to-end testing and optimization
 
 ---
 
@@ -594,22 +573,79 @@ weights = weight_array[name_indices]
 
 | File | Status | Conversion Date | Notes | Performance Gain |
 |------|--------|----------------|-------|------------------|
-| `eigen_root.py` | ⏳ | - | - | - |
-| `calculate_bbox_moment06.py` | ⏳ | - | Critical path | - |
-| `calculate_bbox_moment_2_zm05.py` | ⏳ | - | `index_add` challenge | - |
-| `calculate_zm_by_ab_rotation01.py` | ⏳ | - | Loop vectorization | - |
-| `calculate_ab_rotation_02.py` | ⏳ | - | Complex loops | - |
-| `calculate_ab_rotation_02_all.py` | ⏳ | - | - | - |
-| `calculate_molecular_radius03.py` | ⏳ | - | - | - |
-| `get_mean_invariant03.py` | ⏳ | - | - | - |
-| `get_ca_distance_info.py` | ⏳ | - | - | - |
-| `get_3dzd_121_descriptor02.py` | ⏳ | - | - | - |
-| `fill_voxel_by_weight_density04.py` | ⏳ | - | Most challenging | - |
-| `calculate_box_by_grid_width.py` | ⏳ | - | - | - |
-| `get_bbox_moment_xyz_sample01.py` | ⏳ | - | Simple | - |
-| `get_transform_matrix_from_ab_list02.py` | ⏳ | - | - | - |
-| `get_residue_gaussian_density_cache02.py` | ⏳ | - | Preprocessing | - |
-| `get_total_residue_weight.py` | ⏳ | - | Optional | - |
+| `calculate_ab_candidates_jax.py` | ✅ | 2025-10-05 | New JAX implementation | - |
+| `eigen_root.py` | ✅ | 2025-10-05 | Fully converted to JAX | High |
+| `calculate_bbox_moment06.py` | ✅ | 2025-10-05 | Fully converted to JAX | High |
+| `calculate_bbox_moment_2_zm05.py` | 🔄 | - | `index_add` challenge remains | - |
+| `calculate_zm_by_ab_rotation01.py` | 🔄 | - | Loop vectorization and `index_add` challenge remains | - |
+| `calculate_ab_rotation_02.py` | ✅ | 2025-10-05 | Uses `compute_ab_candidates_jax` | High |
+| `calculate_ab_rotation_02_all.py` | ✅ | 2025-10-05 | Uses `compute_ab_candidates_jax` | High |
+| `calculate_molecular_radius03.py` | ✅ | 2025-10-05 | Fully converted to JAX | Medium |
+| `get_mean_invariant03.py` | ✅ | 2025-10-05 | Fully converted to JAX | Medium |
+| `get_ca_distance_info.py` | ✅ | 2025-10-05 | Fully converted to JAX | Medium |
+| `get_3dzd_121_descriptor02.py` | 🔄 | - | Conditional assignment needs `jnp.where` | - |
+| `fill_voxel_by_weight_density04.py` | 🔄 | - | Major refactoring needed for atom loop and dynamic slicing | - |
+| `calculate_box_by_grid_width.py` | 🔄 | - | Loop vectorization and variable box sizes challenge | - |
+| `get_bbox_moment_xyz_sample01.py` | ✅ | 2025-10-05 | Fully converted to JAX | Low |
+| `get_transform_matrix_from_ab_list02.py` | ✅ | 2025-10-05 | Fully converted to JAX | Medium |
+| `get_residue_gaussian_density_cache02.py` | 🔄 | - | Depends on `calculate_box_by_grid_width` conversion | - |
+| `get_total_residue_weight.py` | ❌ | - | Returns a float; no JAX conversion required | - |
+| `get_descriptor_property.py` | ⏳ | - | Convert static NumPy arrays to JAX arrays | - |
+| `get_residue_weight_map01.py` | ❌ | - | Static data, convert to JAX array for use in JAX functions | - |
+| `get_residue_radius_map01.py` | ❌ | - | Static data, convert to JAX array for use in JAX functions | - |
+| `get_global_parameter02.py` | ❌ | - | Configuration, use `jnp.pi` for constant calculation | - |
+| `get_pdb_xyz_ca02.py` | ❌ | - | I/O and string processing, output converted to JAX array | - |
+| `set_pdb_xyz_rot_m_01.py` | ❌ | - | I/O, matrix multiplication could use JAX | - |
+| `read_file_as_string_list.py` | ❌ | - | Pure I/O | - |
+| `write_string_list_as_file.py` | ❌ | - | Pure I/O | - |
+| `__init__.py` | ❌ | - | Imports only | - |
+
+---
+
+## Resources
+
+### JAX Documentation
+- [JAX Quickstart](https://jax.readthedocs.io/en/latest/notebooks/quickstart.html)
+- [JAX NumPy API](https://jax.readthedocs.io/en/latest/jax.numpy.html)
+- [Common Gotchas](https://jax.readthedocs.io/en/latest/notebooks/Common_Gotchas_in_JAX.html)
+
+### Conversion Guides
+- [NumPy to JAX Migration](https://jax.readthedocs.io/en/latest/jax-101/01-jax-basics.html)
+- [Sharp Bits](https://jax.readthedocs.io/en/latest/notebooks/thinking_in_jax.html)
+- `jax.disable_jit()` for debugging
+
+---
+
+## Progress Tracking
+
+| File | Status | Conversion Date | Notes | Performance Gain |
+|------|--------|----------------|-------|------------------|
+| `calculate_ab_candidates_jax.py` | ✅ | 2025-10-05 | New JAX implementation | - |
+| `eigen_root.py` | ✅ | 2025-10-05 | Fully converted to JAX | High |
+| `calculate_bbox_moment06.py` | ✅ | 2025-10-05 | Fully converted to JAX | High |
+| `calculate_bbox_moment_2_zm05.py` | ✅ | - | `index_add` challenge remains | - |
+| `calculate_zm_by_ab_rotation01.py` | 🔄 | - | Loop vectorization and `index_add` challenge remains | - |
+| `calculate_ab_rotation_02.py` | 🔄 | 2025-10-05 | Uses `compute_ab_candidates_jax` but not vectorised yet |  |
+| `calculate_ab_rotation_02_all.py` | 🔄 | 2025-10-05 | Uses `compute_ab_candidates_jax` but not vectorised yet |  |
+| `calculate_molecular_radius03.py` | ✅ | 2025-10-05 | Fully converted to JAX | Medium |
+| `get_mean_invariant03.py` | ✅ | 2025-10-05 | Fully converted to JAX | Medium |
+| `get_ca_distance_info.py` | ✅ | 2025-10-05 | Fully converted to JAX | Medium |
+| `get_3dzd_121_descriptor02.py` | ✅ | - | Converted | - |
+| `fill_voxel_by_weight_density04.py` | 🔄 | - | used for featurising - low priority | - |
+| `calculate_box_by_grid_width.py` | 🔄 | - | used for featurising - low priority. Loop vectorization and variable box sizes challenge | - |
+| `get_bbox_moment_xyz_sample01.py` | ✅ | 2025-10-05 | Fully converted to JAX | Low |
+| `get_transform_matrix_from_ab_list02.py` | ✅ | 2025-10-05 | Fully converted to JAX | Medium |
+| `get_residue_gaussian_density_cache02.py` | 🔄 | - | Used for featurising - low priority. Depends on `calculate_box_by_grid_width` conversion.  | - |
+| `get_total_residue_weight.py` | ⏳ | - |used for featurising - low priority| - |
+| `get_descriptor_property.py` | ✅ | - | Converted| - |
+| `get_residue_weight_map01.py` | ❌ | - | Static data, convert to JAX array for use in JAX functions | - |
+| `get_residue_radius_map01.py` | ❌ | - | Static data, convert to JAX array for use in JAX functions | - |
+| `get_global_parameter02.py` | ❌ | - | Configuration, use `jnp.pi` for constant calculation | - |
+| `get_pdb_xyz_ca02.py` | ❌ | - | I/O and string processing, output converted to JAX array | - |
+| `set_pdb_xyz_rot_m_01.py` | ❌ | - | I/O, matrix multiplication could use JAX | - |
+| `read_file_as_string_list.py` | ❌ | - | Pure I/O | - |
+| `write_string_list_as_file.py` | ❌ | - | Pure I/O | - |
+| `__init__.py` | ❌ | - | Imports only | - |
 
 ---
 

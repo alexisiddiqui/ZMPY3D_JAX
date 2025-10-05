@@ -1,4 +1,0 @@
-Maximum similarity score: 16390.42444691732
-Similarity matrix shape: (96, 96)
-Mean similarity: 10861.812266072193
-Std similarity: 2113.236819429955

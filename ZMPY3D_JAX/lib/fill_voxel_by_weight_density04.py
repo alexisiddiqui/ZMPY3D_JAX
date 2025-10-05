@@ -5,7 +5,11 @@
 
 from typing import Dict, Sequence, Tuple
 
+import chex
+import jax.numpy as jnp
 import numpy as np
+
+import ZMPY3D_JAX.config as _config
 
 
 def fill_voxel_by_weight_density04(
@@ -14,7 +18,7 @@ def fill_voxel_by_weight_density04(
     residue_weight_map: Dict[str, float],
     grid_width: float,
     residue_box: Dict[str, np.ndarray],
-) -> Tuple[np.ndarray, np.ndarray]:
+) -> Tuple[chex.Array, chex.Array]:
     """Fills a 3D voxel grid with density values based on atomic coordinates, amino acid types,
     and pre-calculated residue density boxes. This effectively converts a discrete atomic
     structure into a continuous density map.
@@ -70,4 +74,6 @@ def fill_voxel_by_weight_density04(
             aa_box * weight_multiplier
         )
 
-    return voxel3d, corner_xyz
+    return jnp.asarray(voxel3d, dtype=_config.FLOAT_DTYPE), jnp.asarray(
+        corner_xyz, dtype=_config.FLOAT_DTYPE
+    )

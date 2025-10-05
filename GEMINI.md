@@ -58,7 +58,7 @@
 **Numerical Flow:**
 1.  Loads pre-calculated binomial and CLM caches.
 2.  For each of the two PDB files:
-    *   Performs Zernike moment calculation (`ZMCal` function, identical to `BatchShapeScore`).
+    *   Performs Zernike moment calculation (`ZMCal` function, similar to `BatchShapeScore`).
     *   Calculates 3DZD invariant descriptor.
     *   Calculates rotation-invariant Zernike moments for orders 2-5.
     *   Concatenates all moment invariants.
@@ -74,10 +74,10 @@
     *   Performs Zernike moment calculation (`ZMCal` function, identical to `BatchSuperA2B`).
     *   Calculates `ABList_all` by combining `calculate_ab_rotation_all` for orders 2-6.
     *   Calculates `ZMList_all` using `calculate_zm_by_ab_rotation`.
-3.  Computes a similarity matrix `M` by `ZMList_A.conj().T @ ZMList_B`.
-4.  Finds the maximum value in `M` to identify the best rotation pair (i, j).
-5.  Retrieves transformation matrices `RotM_A` and `RotM_B` using `get_transform_matrix_from_ab_list`.
-6.  Calculates the target rotation matrix `TargetRotM = np.linalg.solve(RotM_B, RotM_A)`.
+    *   Computes a similarity matrix `M` by `ZMList_A.conj().T @ ZMList_B`.
+    *   Finds the maximum value in `M` to identify the best rotation pair (i, j).
+    *   Retrieves transformation matrices `RotM_A` and `RotM_B` using `get_transform_matrix_from_ab_list`.
+    *   Calculates the target rotation matrix `TargetRotM = np.linalg.solve(RotM_B, RotM_A)`.
 
 ### `ZMPY3D_JAX/ZMPY3D_CLI_ZM.py`
 **Function:** Computes Zernike moments for a single PDB structure based on specified maximum order, normalization order, and voxel gridding width.
@@ -153,7 +153,7 @@ ZMPY3D_JAX exposes a runtime configuration function and module-level globals to 
     3.  Reshapes `m33_linear` into a 3x3 rotation matrix `m33`. JAX's `jax.numpy.reshape` can be used.
     4.  Constructs a 4x4 homogeneous transformation matrix `m44` by embedding `m33` and `center_scaled`. This involves array manipulation.
     5.  Calculates the inverse of `m44` using `np.linalg.inv`. This is a critical numerical linear algebra operation that JAX can accelerate with `jax.numpy.linalg.inv`.
-    *   **JAX Conversion Notes:** This function is highly amenable to JAX conversion. All NumPy operations involving complex numbers, array reshaping, and linear algebra can be directly replaced with their `jax.numpy` equivalents for potential performance gains and automatic differentiation.
+    *   **JAX Conversion Notes:** Fully converted to JAX. Uses `jnp.array`, `jnp.real`, `jnp.imag`, `jnp.reshape`, `jnp.zeros`, `.at[]`, and `jnp.linalg.inv`. Direct conversion to `jax.numpy`. `np.linalg.inv()` → `jnp.linalg.inv()` (GPU acceleration). Complex operations well supported.
 
 ### `ZMPY3D_JAX/lib/get_total_residue_weight.py`
 *   **Function:** Calculates the total residue weight of a protein given a list of amino acid names and a mapping of amino acid names to their weights. Defaults to 'ASP' if an amino acid name is not found in the map.
@@ -162,14 +162,25 @@ ZMPY3D_JAX exposes a runtime configuration function and module-level globals to 
     2.  For each amino acid, it looks up its weight in a dictionary (`residue_weight_map`).
     3.  Sums up the weights.
     *   **JAX Conversion Notes:** This function primarily involves dictionary lookups and a loop. While JAX can handle loops, it's generally more efficient to vectorize operations. If `aa_name_list` and `residue_weight_map` can be represented as JAX arrays (e.g., one-hot encoded amino acid names and a weight array), the summation could be vectorized using `jax.numpy.sum` and `jax.numpy.take` or similar operations for efficient JAX compilation. The dictionary lookup for missing amino acids would need careful handling in a JAX-compatible way (e.g., using `jax.lax.select` with a boolean mask).
+    *   **JAX Conversion Challenges**:
+        - ⚠️ Dictionary lookup not directly JAX-compatible
+        - Consider array-based lookup table
+    *   **Code Example (Python)**:
+        ```python
+        # Loop with dictionary lookup in get_total_residue_weight.py
+        for aa_name in aa_name_list:
+            total_weight += residue_weight_map.get(aa_name, default_weight)
+        ```
 
 ### `ZMPY3D_JAX/lib/get_residue_weight_map01.py`
 *   **Function:** Returns a dictionary mapping three-letter amino acid codes (and some nucleotide codes) to their corresponding residue weights.
 *   **Numerical Flow (JAX Context):** This function defines a static dictionary. It does not involve any numerical computations. In a JAX context, this dictionary would likely be converted into a static JAX array or a lookup table if its values are to be used within JAX-transformed functions.
+    *   **JAX Notes**: Convert dictionary to JAX array for use in JAX functions
 
 ### `ZMPY3D_JAX/lib/get_residue_radius_map01.py`
 *   **Function:** Returns a dictionary mapping three-letter amino acid codes (and some nucleotide codes) to their corresponding residue radii, scaled by a constant factor `sqrt(5/3)`.
 *   **Numerical Flow (JAX Context):** This function defines a static dictionary and performs a simple scalar multiplication (`math.sqrt(5.0 / 3.0) * value`). In a JAX context, similar to `get_residue_weight_map01`, this dictionary would likely be converted into a static JAX array or a lookup table if its values are to be used within JAX-transformed functions. The `math.sqrt` operation is a standard numerical operation.
+    *   **JAX Notes**: Convert dictionary to JAX array for use in JAX functions
 
 ### `ZMPY3D_JAX/lib/get_residue_gaussian_density_cache02.py`
 *   **Function:** Generates a cache of 3D Gaussian density boxes for different amino acid residues and grid widths. This pre-calculates the density distributions used for voxelization.
@@ -182,7 +193,7 @@ ZMPY3D_JAX exposes a runtime configuration function and module-level globals to 
         *   Calculates `density_scalar` which involves division and exponentiation (`gw**3`). These are element-wise numerical operations.
         *   Adjusts the density boxes by multiplying with `density_scalar`. This is element-wise array multiplication.
     4.  Stores these adjusted boxes in dictionaries.
-    *   **JAX Conversion Notes:** The core numerical operations (summation, division, exponentiation, array multiplication) are all JAX-compatible. The loops can be handled by `jax.lax.scan` or by ensuring that `calculate_box_by_grid_width` is JAX-transformed and then mapping over the `doable_grid_width_list` if possible. The dictionary creation would remain outside the JAX-transformed functions, but the arrays within them would be JAX arrays.
+    *   **JAX Conversion Notes:** Can remain mostly NumPy (preprocessing). Or convert loop → `jax.lax.scan()` with `calculate_box_by_grid_width` JAX-ified. Output arrays convert to JAX arrays.
 
 ### `ZMPY3D_JAX/lib/get_pdb_xyz_ca02.py`
 *   **Function:** Parses a PDB file to extract the XYZ coordinates and amino acid names specifically for C-alpha (CA) atoms. It also checks for NaN values in coordinates.
@@ -193,7 +204,7 @@ ZMPY3D_JAX exposes a runtime configuration function and module-level globals to 
     4.  Appends coordinates and names to lists.
     5.  Checks for NaN values in coordinates using `math.isnan`. This is a numerical check.
     6.  Converts the list of XYZ tuples into a NumPy array.
-    *   **JAX Conversion Notes:** The primary numerical part is the creation of the `xyz_matrix` NumPy array. If the parsing and filtering steps can be made JAX-compatible (e.g., by operating on string arrays or pre-parsed numerical data), then the `xyz_matrix` could directly be a JAX array. The NaN check could use `jax.numpy.isnan`. However, the string parsing itself is not directly JAX-transformable and would likely remain a Python/NumPy preprocessing step.
+    *   **JAX Conversion Notes:** Not Applicable. This function primarily handles file I/O and string parsing to extract C-alpha atom coordinates and amino acid names. While the final `xyz_matrix` is a numerical array, the preceding steps are not directly JAX-transformable. The NaN check could use `jax.numpy.isnan` if the data were already in a JAX array, but the core logic remains outside JAX's typical domain. It serves as a data preparation step for JAX-compatible functions.
 
 ### `ZMPY3D_JAX/lib/get_mean_invariant03.py`
 *   **Function:** Calculates the mean and standard deviation of a list of Zernike moment arrays, typically representing different rotations of a molecule.
@@ -201,7 +212,7 @@ ZMPY3D_JAX exposes a runtime configuration function and module-level globals to 
     1.  Stacks a list of Zernike moment arrays into a single NumPy array, then takes the absolute value. This involves array stacking (`np.stack`) and element-wise absolute value (`np.abs`).
     2.  Calculates the mean along a specified axis (`np.mean`).
     3.  Calculates the standard deviation along a specified axis (`np.std`) with a delta degrees of freedom of 1.
-    *   **JAX Conversion Notes:** All operations (`np.stack`, `np.abs`, `np.mean`, `np.std`) have direct equivalents in `jax.numpy` and are highly suitable for JAX transformation. This function would be very efficient under JAX.
+    *   **JAX Conversion Notes:** Fully converted to JAX. Uses `jnp.stack`, `jnp.abs`, `jnp.mean`, and `jnp.std`. Direct `jax.numpy` conversion. `ddof` parameter supported in `jnp.std()`. Consider `jax.jit` for performance.
 
 ### `ZMPY3D_JAX/lib/get_global_parameter02.py`
 *   **Function:** Initializes and returns a dictionary containing various global parameters used throughout the ZMPY3D codebase, such as grid widths, radius multipliers, density calculation constants, and mappings for residue weights and radii.
@@ -209,12 +220,12 @@ ZMPY3D_JAX exposes a runtime configuration function and module-level globals to 
     1.  Defines several scalar constants (`sd_cutoff`, `default_radius_multiplier`, `density_multiplier`).
     2.  Calculates `three_over_2pi_32` using `math.pi` and exponentiation. This is a simple numerical calculation.
     3.  Calls `get_residue_weight_map01()` and `get_residue_radius_map01()` to populate parts of the parameter dictionary.
-    *   **JAX Conversion Notes:** This function primarily sets up static parameters. The numerical calculation for `three_over_2pi_32` can be done using `jax.numpy.pi` and `jax.numpy.power`. The dictionaries themselves would remain Python dictionaries, but their values (weights, radii) could be converted to JAX arrays if they are to be used in JAX-transformed functions.
+    *   **JAX Conversion Notes:** Not applicable (configuration). Use `jnp.pi` for constant calculation. Keep as parameter dictionary. Convert weight/radius maps to arrays.
 
 ### `ZMPY3D_JAX/lib/get_descriptor_property.py`
 *   **Function:** Returns a dictionary (`property_struct`) containing various thresholds and pre-defined weights and indices for Zernike moments and geometric descriptors. These are used in calculating shape scores.
 *   **Numerical Flow (JAX Context):** This function primarily defines static numerical arrays (`np.array`) and scalar values.
-    *   **JAX Conversion Notes:** The NumPy arrays (`GeoWeight`, `ZMIndex0` through `ZMIndex4`, `ZMWeight0` through `ZMWeight4`) can be directly converted to JAX arrays (`jax.numpy.array`). The scalar values would remain as Python floats. This function would mostly serve to initialize JAX-compatible constants.
+    *   **JAX Conversion Notes:** Convert to `jnp.array()` at initialization.
 
 ### `ZMPY3D_JAX/lib/get_ca_distance_info.py`
 *   **Function:** Calculates various geometric descriptors from C-alpha (CA) atom coordinates, including percentiles of distances to the center, standard deviation of distances, skewness (s), and kurtosis (k).
@@ -224,14 +235,14 @@ ZMPY3D_JAX exposes a runtime configuration function and module-level globals to 
     3.  Computes percentiles of these distances (`np.percentile`).
     4.  Calculates the standard deviation of distances (`np.std`).
     5.  Calculates skewness (`s`) and kurtosis (`k`) using formulas involving sums, powers, and divisions of normalized distances.
-    *   **JAX Conversion Notes:** All NumPy operations (`np.mean`, `np.sqrt`, `np.sum`, `**`, `np.percentile`, `np.std`) have direct equivalents in `jax.numpy` and are highly suitable for JAX transformation. This function would benefit significantly from JAX's numerical acceleration and automatic differentiation capabilities.
+    *   **JAX Conversion Notes:** Fully converted to JAX. Uses `jnp.mean`, `jnp.sqrt`, `jnp.sum`, `jnp.percentile`, `jnp.std`, and `jnp.where`. Most operations have direct JAX equivalents. `np.percentile()` → `jnp.percentile()`. Consider `jax.jit` for entire function.
 
 ### `ZMPY3D_JAX/lib/get_bbox_moment_xyz_sample01.py`
 *   **Function:** Generates normalized sample coordinates (X, Y, Z) for a bounding box, centered at a given point and scaled by a radius. These samples are used for calculating Zernike moments.
 *   **Numerical Flow (JAX Context):**
     1.  Extracts dimensions from `dimension_bbox_scaled`.
     2.  Generates `x_sample`, `y_sample`, `z_sample` arrays using `np.arange`, subtraction, and division. These are element-wise array operations.
-    *   **JAX Conversion Notes:** All NumPy operations (`np.arange`, subtraction, division) have direct equivalents in `jax.numpy` and are highly suitable for JAX transformation. This function would be very efficient under JAX.
+    *   **JAX Conversion Notes:** Fully converted to JAX. Uses `jnp.arange`, subtraction, and division. Trivial conversion to `jax.numpy`. Direct replacement.
 
 ### `ZMPY3D_JAX/lib/get_3dzd_121_descriptor02.py`
 *   **Function:** Calculates the 3D Zernike Descriptor (3DZD) 121 invariant from scaled Zernike moments. This invariant is a rotation-invariant descriptor of molecular shape.
@@ -242,7 +253,7 @@ ZMPY3D_JAX exposes a runtime configuration function and module-level globals to 
     4.  Sets a slice of `z_moment_scaled_norm` to 0, then sums again to get `z_moment_scaled_norm_negative`. This involves array slicing and assignment, and another reduction.
     5.  Calculates the final invariant using `np.sqrt` and addition.
     6.  Replaces small values with NaN. This involves a conditional assignment.
-    *   **JAX Conversion Notes:** All numerical operations (`np.abs`, `**`, `np.sum`, `np.sqrt`) have direct equivalents in `jax.numpy`. Array slicing and conditional assignments can be handled with `jax.numpy.where` or `jax.lax.select`. This function is highly suitable for JAX transformation.
+    *   **JAX Conversion Notes:** `np.nan_to_num()` → `jnp.nan_to_num()` or `jnp.where(jnp.isnan(x), 0, x)`. Conditional assignment → `jnp.where()`. Array slicing well supported.
 
 ### `ZMPY3D_JAX/lib/fill_voxel_by_weight_density04.py`
 *   **Function:** Fills a 3D voxel grid with density values based on atomic coordinates, amino acid types, and pre-calculated residue density boxes. This effectively converts a discrete atomic structure into a continuous density map.
@@ -258,11 +269,21 @@ ZMPY3D_JAX exposes a runtime configuration function and module-level globals to 
         *   Calculates `coord_box_corner` using `np.fix`, `np.round`, subtraction, division, and type casting.
         *   Defines `start` and `end` for slicing.
         *   **Voxel update:** `voxel3d[start[0]:end[0], start[1]:end[1], start[2]:end[2]] += aa_box * weight_multiplier`. This involves array slicing, element-wise multiplication, and in-place addition.
-    *   **JAX Conversion Notes:**
-        *   The initial bounding box calculations are straightforward to convert to JAX.
-        *   The loop over `num_of_atom` is a challenge for direct JAX transformation, as JAX prefers vectorized operations. This loop would ideally be replaced with `jax.lax.scan` or a custom JAX primitive if the operations within the loop can be made fully JAX-compatible.
-        *   The dictionary lookups for `aa_name` and `residue_box` would need to be handled carefully, potentially by converting them to JAX arrays and using `jax.numpy.take` or similar indexing operations.
-        *   The array slicing and in-place addition on `voxel3d` are also areas that need careful JAX conversion, as JAX arrays are immutable. This would likely involve `jax.lax.dynamic_update_slice` or similar functional updates.
+    *   **JAX Conversion Notes**:
+        *   Loop over atoms → `jax.lax.scan()` (complex refactoring)
+        *   In-place `+=` → `jax.lax.dynamic_update_slice()`
+        *   Dictionary lookups → Convert to array indexing
+        *   Pre-compute residue boxes as arrays
+    *   **JAX Conversion Challenges**:
+        - ⚠️ Major refactoring needed for atom loop
+        - ⚠️ Dynamic slicing required for voxel updates
+        - ⚠️ Dictionary to array conversion needed
+    *   **Code Example (NumPy)**:
+        ```python
+        # Inside the atom loop in fill_voxel_by_weight_density04.py
+        # This performs an in-place update on the voxel grid
+        voxel3d[start[0]:end[0], start[1]:end[1], start[2]:end[2]] += aa_box * weight_multiplier
+        ```
 
 ### `ZMPY3D_JAX/lib/eigen_root.py`
 *   **Function:** Calculates the roots of a polynomial given its coefficients by constructing a companion matrix and finding its eigenvalues.
@@ -270,7 +291,7 @@ ZMPY3D_JAX exposes a runtime configuration function and module-level globals to 
     1.  Reshapes the input `poly_coefficient_list` into a 1D array.
     2.  Constructs a companion matrix `m` using `np.diag` and array assignment. This involves array creation and manipulation.
     3.  Calculates the eigenvalues of `m` using `np.linalg.eigvals`. This is a core numerical linear algebra operation.
-    *   **JAX Conversion Notes:** All NumPy operations (`np.reshape`, `np.diag`, array assignment, `np.linalg.eigvals`) have direct equivalents in `jax.numpy` and `jax.numpy.linalg`. This function is highly suitable for JAX transformation and would benefit from JAX's optimized linear algebra routines.
+    *   **JAX Conversion Notes:** Fully converted to JAX. Uses `jnp.asarray`, `jnp.diag`, `jnp.linalg.eigvals`, `jax.lax.cond`, and `jax.vmap`. `np.diag()` → `jnp.diag()`. `np.linalg.eigvals()` → `jnp.linalg.eigvals()` (GPU acceleration available). Direct conversion, minimal changes needed.
 
 ### `ZMPY3D_JAX/lib/calculate_zm_by_ab_rotation01.py`
 *   **Function:** Calculates rotated Zernike moments based on raw Zernike moments and rotation coefficients (`a`, `b`). It uses pre-computed binomial and CLM (Clebsch-Gordan coefficients) caches.
@@ -285,12 +306,20 @@ ZMPY3D_JAX exposes a runtime configuration function and module-level globals to 
         *   Calculates `nlm` by summing several logarithmic terms and `f_exp`, `clm`, `bin`. This is element-wise complex addition.
         *   Initializes `z_nlm` and performs an "add at" operation: `np.add.at(z_nlm, s_id, np.exp(nlm))`. This is an in-place update, which is problematic for JAX's immutability.
         *   Reshapes `zm` and transposes it.
-    *   **JAX Conversion Notes:**
-        *   The initial complex arithmetic and logarithmic power calculations are highly suitable for JAX.
-        *   The conditional logic for `f_exp` can be handled with `jax.numpy.where`.
-        *   The loop over `zm_rotated_list` needs to be vectorized or transformed using `jax.lax.scan` or `jax.vmap`.
-        *   The `np.add.at` operation is a major challenge. In JAX, this would typically be replaced by `jax.ops.index_add` or by re-thinking the accumulation as a functional update, possibly using `jax.scipy.special.logsumexp` if the sum is over exponentials.
-        *   Array reshaping and transposing are directly supported by `jax.numpy`.
+    *   **JAX Conversion Notes**:
+        - Loop over rotations → `jax.lax.scan()` or `jax.vmap()`
+        - `np.add.at()` → `jax.ops.index_add()` or functional equivalent
+        - Consider `jax.scipy.special.logsumexp()` for numerical stability
+        - Use `jnp.where()` for conditional logic
+    *   **JAX Conversion Challenges**:
+        - ⚠️ Loop vectorization required
+        - ⚠️ In-place accumulation needs functional approach
+    *   **Code Example (NumPy)**:
+        ```python
+        # Inside the loop over rotations in calculate_zm_by_ab_rotation01.py
+        # This performs an in-place update within a loop
+        np.add.at(z_nlm, s_id, np.exp(nlm))
+        ```
 
 ### `ZMPY3D_JAX/lib/calculate_molecular_radius03.py`
 *   **Function:** Calculates the average and maximum molecular radii from a 3D voxel density map, given the center of mass, total volume/mass, and a default radius multiplier.
@@ -301,7 +330,7 @@ ZMPY3D_JAX exposes a runtime configuration function and module-level globals to 
     4.  Calculates squared distances of voxels to the center (`np.sum`, `**2`).
     5.  Calculates `average_voxel_mass2center_squared` using element-wise multiplication, summation, and division.
     6.  Calculates `average_voxel_dist2center` and `max_voxel_dist2center` using `np.sqrt`, multiplication, and `np.max`.
-    *   **JAX Conversion Notes:** All NumPy operations (`np.where`, boolean indexing, `np.stack`, `np.sum`, `**`, `np.sqrt`, `np.max`) have direct equivalents in `jax.numpy` and are highly suitable for JAX transformation. This function would be very efficient under JAX.
+    *   **JAX Conversion Notes:** Fully converted to JAX. Uses `jnp.asarray`, `jnp.where`, `jnp.stack`, `jnp.sum`, `jnp.sqrt`, `jnp.max`, and `jnp.std`. Direct `jax.numpy` conversion. Boolean indexing well supported. All operations efficiently implemented in JAX.
 
 ### `ZMPY3D_JAX/lib/calculate_box_by_grid_width.py`
 *   **Function:** Generates 3D Gaussian density boxes for each amino acid residue at a specified grid width. These boxes represent the spatial density distribution of each residue.
@@ -315,11 +344,21 @@ ZMPY3D_JAX exposes a runtime configuration function and module-level globals to 
         *   Calculates `x_sx` and `gaus_val` using complex arithmetic involving `**`, division, multiplication, and `np.exp`. These are element-wise array operations.
         *   Initializes `residue_unit_box` as a zero array.
         *   Conditionally assigns `gaus_val` to `residue_unit_box` based on `is_within_radius`. This involves boolean indexing and assignment.
-    *   **JAX Conversion Notes:**
-        *   The loop over `residue_name` should be vectorized using `jax.vmap` if possible, or handled with `jax.lax.scan`.
-        *   `np.mgrid` can be replaced with `jax.numpy.mgrid`.
-        *   All numerical operations (`np.sqrt`, `**`, division, multiplication, `np.exp`, comparisons) have direct `jax.numpy` equivalents.
-        *   Boolean indexing and conditional assignment can be handled with `jax.numpy.where` or `jax.lax.select` to maintain immutability.
+    *   **JAX Conversion Notes**:
+        - Loop over residues → `jax.vmap()` (if uniform box sizes)
+        - `np.mgrid` → `jnp.mgrid` (supported)
+        - Boolean indexing → `jnp.where()`
+        - Consider pre-computation and caching
+    *   **JAX Conversion Challenges**:
+        - ⚠️ Variable box sizes may complicate vectorization
+    *   **Code Example (NumPy)**:
+        ```python
+        # Loop over residue names in calculate_box_by_grid_width.py
+        # Box sizes can vary per residue, complicating direct vmap.
+        for residue_name in residue_name_list:
+            # ... calculations for residue_unit_box ...
+            residue_boxes[residue_name] = residue_unit_box
+        ```
 
 ### `ZMPY3D_JAX/lib/calculate_bbox_moment_2_zm05.py`
 *   **Function:** Converts raw bounding box moments into Zernike moments (both raw and scaled). This is a core step in the Zernike moment calculation pipeline.
@@ -328,17 +367,22 @@ ZMPY3D_JAX exposes a runtime configuration function and module-level globals to 
     2.  Reshapes and transposes `bbox_moment`. This involves array manipulation.
     3.  Calculates `zm_geo` by element-wise multiplication of `g_cache_complex` with elements from `bbox_moment` indexed by `g_cache_pqr_linear`. This involves array indexing and complex multiplication.
     4.  Initializes `zm_geo_sum` as a zero array.
-    5.  Performs an "add at" operation: `np.add.at(zm_geo_sum, g_cache_complex_index - 1, zm_geo)`. This is an in-place update.
+    5.  Performs an "add at" operation: `np.add.at(zm_geo_sum, g_cache_complex_index - 1, zm_geo)`. This is an in-place update, which is problematic for JAX's immutability.
     6.  Replaces zero values in `zm_geo_sum` with complex NaNs. This involves conditional assignment.
     7.  Calculates `z_moment_raw` by multiplying `zm_geo_sum` with a constant.
     8.  Reshapes and transposes `z_moment_raw`.
     9.  Calculates `z_moment_scaled` by element-wise multiplication with `clm_cache3d`.
-    *   **JAX Conversion Notes:**
-        *   Array reshaping and transposing are directly supported by `jax.numpy`.
-        *   Element-wise complex multiplication and array indexing are JAX-compatible.
-        *   The `np.add.at` operation is a major challenge for JAX due to immutability. It would need to be replaced by `jax.ops.index_add` or a functional equivalent.
-        *   Conditional assignment for NaNs can be handled with `jax.numpy.where`.
-        *   All other numerical operations are directly supported by `jax.numpy`.
+    *   **JAX Conversion Notes**:
+        - `np.add.at()` → `jax.ops.index_add()` (critical change)
+        - Use `jnp.where()` for conditional NaN assignment
+        - All complex operations supported in JAX
+    *   **JAX Conversion Challenges**:
+        - ⚠️ In-place updates (`np.add.at`) require functional refactoring
+    *   **Code Example (NumPy)**:
+        ```python
+        # In-place accumulation in calculate_bbox_moment_2_zm05.py
+        np.add.at(zm_geo_sum, g_cache_complex_index - 1, zm_geo)
+        ```
 
 ### `ZMPY3D_JAX/lib/calculate_bbox_moment06.py`
 *   **Function:** Calculates 3D bounding box moments up to a specified maximum order from a voxel density map. It uses `tensordot` for efficient computation.
@@ -350,13 +394,7 @@ ZMPY3D_JAX exposes a runtime configuration function and module-level globals to 
     5.  Generates `p, q, r` grids using `np.meshgrid`.
     6.  Normalizes and transposes `bbox_moment` by dividing by `p, q, r` and transposing.
     7.  Extracts `volume_mass` and `center` from `bbox_moment`.
-    *   **JAX Conversion Notes:**
-        *   Array creation, slicing, and `np.diff` have direct `jax.numpy` equivalents.
-        *   `np.power` and `np.arange` are directly supported.
-        *   `np.tensordot` is available in `jax.numpy` and is a prime candidate for JAX acceleration.
-        *   `np.meshgrid` is available in `jax.numpy`.
-        *   Array transposition and element-wise division are directly supported.
-        *   This function is highly amenable to JAX transformation and would be very efficient.
+    *   **JAX Conversion Notes:** Fully converted to JAX. Uses `jnp.zeros`, `jnp.diff`, `jnp.power`, `jnp.arange`, `jnp.tensordot`, `jnp.meshgrid`, `jnp.transpose`. Immutable array updates handled with `.at[]` syntax. `np.tensordot` → `jnp.tensordot` (major speedup expected). Consider `jax.jit` for entire function.
 
 ### `ZMPY3D_JAX/lib/calculate_ab_rotation_02_all.py`
 *   **Function:** Calculates all possible `a` and `b` rotation coefficients for a given raw Zernike moment array, considering multiple `ind_real` values (orders). It reuses the `eigen_root` function.
@@ -374,15 +412,20 @@ ZMPY3D_JAX exposes a runtime configuration function and module-level globals to 
             *   Appends `a` and `b` to lists.
         *   Concatenates `a_list` and `b_list` into `ab_list`.
     3.  Iterates through `ind_real_all` (orders) and calls `get_ab_list_by_ind_real` for each.
-    *   **JAX Conversion Notes:**
-        *   The initial `abconj_coef` calculation and `eigen_root` call are JAX-compatible.
-        *   Inside `get_ab_list_by_ind_real`:
-            *   All element-wise numerical operations and power calculations are JAX-compatible.
-            *   The loop for `bimbre_sol_real` and the subsequent loop for `a_list`/`b_list` would need to be vectorized using `jax.vmap` or `jax.lax.scan`.
-            *   `np.vectorize(complex)` can be replaced by direct JAX complex number construction.
-            *   `np.concatenate` is available in `jax.numpy`.
-        *   The outer loop over `ind_real_all` would also need to be vectorized or `jax.lax.scan`-ed.
-        *   This function is numerically intensive and would greatly benefit from JAX transformation, but requires careful handling of loops and conditional logic.
+    *   **JAX Conversion Notes**:
+        - Fully converted to JAX. Uses `compute_ab_candidates_jax` for core logic, which is JAX-compatible.
+        - Nested function → Ensure JAX compatibility
+        - Outer loop over orders → `jax.vmap()` if possible
+        - Share conversion strategy with `calculate_ab_rotation_02.py`
+    *   **JAX Conversion Challenges**:
+        - ⚠️ Double nested loops (orders + solutions)
+    *   **Code Example (NumPy)**:
+        ```python
+        # Outer loop over orders and inner loops from calculate_ab_rotation_02.py
+        # This double-nested loop structure needs careful vectorization in JAX.
+        for ind_real in ind_real_all:
+            ab_list.append(get_ab_list_by_ind_real(ind_real, ...))
+        ```
 
 ### `ZMPY3D_JAX/lib/calculate_ab_rotation_02.py`
 *   **Function:** Calculates `a` and `b` rotation coefficients for a specific `target_order2_norm_rotate` from raw Zernike moments. It uses the `eigen_root` function to solve polynomial equations.
@@ -398,13 +441,22 @@ ZMPY3D_JAX exposes a runtime configuration function and module-level globals to 
         *   Constructs complex `b` and `a` using `np.vectorize(complex)` and complex conjugation.
         *   Appends `a` and `b` to lists.
     8.  Concatenates `a_list` and `b_list` into `ab_list`.
-    *   **JAX Conversion Notes:**
-        *   The initial `abconj_coef` calculation and `eigen_root` call are JAX-compatible.
-        *   All element-wise numerical operations and power calculations are JAX-compatible.
-        *   The loop for `bimbre_sol_real` and the subsequent loop for `a_list`/`b_list` would need to be vectorized using `jax.vmap` or `jax.lax.scan`.
-        *   `np.vectorize(complex)` can be replaced by direct JAX complex number construction.
-        *   `np.concatenate` is available in `jax.numpy`.
-        *   This function is numerically intensive and would greatly benefit from JAX transformation, but requires careful handling of loops and conditional logic.
+    *   **JAX Conversion Notes**:
+        - Fully converted to JAX. Uses `compute_ab_candidates_jax` for core logic, which is JAX-compatible.
+        - `np.vectorize(complex)` → Direct JAX complex construction
+        - Loop over solutions → `jax.lax.scan()` or `jax.vmap()`
+        - Filter operations → `jnp.where()` with masking
+    *   **JAX Conversion Challenges**:
+        - ⚠️ Multiple nested loops need vectorization
+        - ⚠️ Conditional filtering requires functional approach
+    *   **Code Example (NumPy)**:
+        ```python
+        # Simplified loop and conditional filtering in calculate_ab_rotation_02.py
+        # This pattern needs to be vectorized in JAX.
+        for sol_real in bimbre_sol_real:
+            if np.abs(sol_real) > 1e-6:
+                # ... calculations and appending to lists ...
+        ```
 
 ### `ZMPY3D_JAX/lib/__init__.py`
 *   **Function:** This file serves as the package initializer for the `lib` directory. It imports and re-exports functions from individual Python files within `lib`, often renaming them for a cleaner API. It also exports CLI functions from the parent `ZMPY3D_JAX` directory.

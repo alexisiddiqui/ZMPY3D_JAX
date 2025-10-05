@@ -5,6 +5,7 @@ Tests for calculate_box_by_grid_width function.
 import sys
 from pathlib import Path
 
+import chex
 import numpy as np
 import pytest
 
@@ -48,7 +49,7 @@ class TestCalculateBoxByGridWidth:
 
         for residue_name, box in residue_box.items():
             # Each box should be a 3D numpy array
-            assert isinstance(box, np.ndarray)
+            assert isinstance(box, chex.Array)
             assert box.ndim == 3
 
             # Dimensions should be odd (centered)

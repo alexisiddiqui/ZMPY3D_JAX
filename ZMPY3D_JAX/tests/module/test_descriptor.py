@@ -1,6 +1,9 @@
 import numpy as np
 
+import ZMPY3D_JAX.config as _config
 from ZMPY3D_JAX.lib.get_3dzd_121_descriptor02 import get_3dzd_121_descriptor02
+
+_config.configure_for_scientific_computing()
 
 
 class TestGet3DZD121Descriptor02:

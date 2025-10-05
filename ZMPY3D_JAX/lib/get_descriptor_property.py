@@ -4,7 +4,7 @@
 
 from typing import Any, Dict
 
-import numpy as np
+import jax.numpy as jnp
 
 
 def get_descriptor_property() -> Dict[str, Any]:
@@ -20,7 +20,7 @@ def get_descriptor_property() -> Dict[str, Any]:
         "GeoThresB": 11.6,
         "ZMThresA": 0.9,
         "ZMThresB": 14.6,
-        "GeoWeight": np.array(
+        "GeoWeight": jnp.array(
             [
                 0.0,
                 5.51565593524,
@@ -38,7 +38,7 @@ def get_descriptor_property() -> Dict[str, Any]:
                 0.796482380717,
             ]
         ).reshape(-1, 1),
-        "ZMIndex0": np.array(
+        "ZMIndex0": jnp.array(
             [
                 3,
                 6,
@@ -78,7 +78,7 @@ def get_descriptor_property() -> Dict[str, Any]:
                 120,
             ]
         ).reshape(-1, 1),
-        "ZMWeight0": np.array(
+        "ZMWeight0": jnp.array(
             [
                 0.0485305205154,
                 0.129656911791,
@@ -118,7 +118,7 @@ def get_descriptor_property() -> Dict[str, Any]:
                 0.139822226096,
             ]
         ).reshape(-1, 1),
-        "ZMIndex1": np.array(
+        "ZMIndex1": jnp.array(
             [
                 7,
                 22,
@@ -153,7 +153,7 @@ def get_descriptor_property() -> Dict[str, Any]:
                 930,
             ]
         ).reshape(-1, 1),
-        "ZMWeight1": np.array(
+        "ZMWeight1": jnp.array(
             [
                 0.0896749555311,
                 0.0595701477555,
@@ -188,7 +188,7 @@ def get_descriptor_property() -> Dict[str, Any]:
                 0.0295736292843,
             ]
         ).reshape(-1, 1),
-        "ZMIndex2": np.array(
+        "ZMIndex2": jnp.array(
             [
                 22,
                 23,
@@ -215,7 +215,7 @@ def get_descriptor_property() -> Dict[str, Any]:
                 927,
             ]
         ).reshape(-1, 1),
-        "ZMWeight2": np.array(
+        "ZMWeight2": jnp.array(
             [
                 0.00624975693875,
                 0.00141147558631,
@@ -242,7 +242,7 @@ def get_descriptor_property() -> Dict[str, Any]:
                 0.042683840434,
             ]
         ).reshape(-1, 1),
-        "ZMIndex3": np.array(
+        "ZMIndex3": jnp.array(
             [
                 7,
                 22,
@@ -284,7 +284,7 @@ def get_descriptor_property() -> Dict[str, Any]:
                 932,
             ]
         ).reshape(-1, 1),
-        "ZMWeight3": np.array(
+        "ZMWeight3": jnp.array(
             [
                 0.0392352388099,
                 0.033359373425,
@@ -326,7 +326,7 @@ def get_descriptor_property() -> Dict[str, Any]:
                 0.0215478368717,
             ]
         ).reshape(-1, 1),
-        "ZMIndex4": np.array(
+        "ZMIndex4": jnp.array(
             [
                 7,
                 21,
@@ -364,7 +364,7 @@ def get_descriptor_property() -> Dict[str, Any]:
                 944,
             ]
         ).reshape(-1, 1),
-        "ZMWeight4": np.array(
+        "ZMWeight4": jnp.array(
             [
                 0.0192989238354,
                 0.0154513810932,
