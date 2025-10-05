@@ -5,6 +5,8 @@ Tests for calculate_molecular_radius function.
 import sys
 from pathlib import Path
 
+import chex
+import jax.numpy as jnp
 import numpy as np
 import pytest
 
@@ -48,19 +50,22 @@ class TestCalculateMolecularRadius:
             spherical_voxel, center, volume_mass, multiplier
         )
 
+        avg_radius = jnp.asarray(avg_radius)
+        max_radius = jnp.asarray(max_radius)
+        chex.assert_tree_all_finite({"avg": avg_radius, "max": max_radius})
+
         # Average radius should be positive
-        assert avg_radius > 0
+        assert float(avg_radius) > 0.0
 
         # Max radius should be positive and reasonable for a sphere of radius 5
-        assert max_radius > 0
-        assert max_radius <= 5.0 * np.sqrt(3)  # Maximum possible distance in sphere
+        assert float(max_radius) > 0.0
+        assert float(max_radius) <= 5.0 * np.sqrt(3)  # Maximum possible distance in sphere
 
         # For a sphere, average radius with multiplier should be reasonable
-        assert 3.0 < avg_radius < 10.0
+        assert 3.0 < float(avg_radius) < 10.0
 
         # The multiplier increases avg_radius, so it may exceed max_radius
-        # Max radius is the actual maximum distance, avg is weighted and multiplied
-        assert max_radius > 0 and avg_radius > 0
+        assert float(max_radius) > 0 and float(avg_radius) > 0
 
     def test_centered_mass(self, centered_mass):
         """Test with a simple centered mass."""
@@ -72,13 +77,17 @@ class TestCalculateMolecularRadius:
             centered_mass, center, volume_mass, multiplier
         )
 
+        avg_radius = jnp.asarray(avg_radius)
+        max_radius = jnp.asarray(max_radius)
+        chex.assert_tree_all_finite({"avg": avg_radius, "max": max_radius})
+
         # Both radii should be positive
-        assert avg_radius > 0
-        assert max_radius > 0
+        assert float(avg_radius) > 0.0
+        assert float(max_radius) > 0.0
 
         # Both should be reasonable values
-        assert avg_radius < 10.0
-        assert max_radius < 10.0
+        assert float(avg_radius) < 10.0
+        assert float(max_radius) < 10.0
 
     def test_different_multipliers(self, centered_mass):
         """Test with different radius multipliers."""
@@ -86,7 +95,7 @@ class TestCalculateMolecularRadius:
         volume_mass = np.sum(centered_mass)
 
         multipliers = [1.0, 1.5, 1.8, 2.0, 2.5]
-        prev_avg = 0
+        prev_avg = 0.0
         prev_max = None
 
         for multiplier in multipliers:
@@ -94,14 +103,18 @@ class TestCalculateMolecularRadius:
                 centered_mass, center, volume_mass, multiplier
             )
 
+            avg_radius = jnp.asarray(avg_radius)
+            max_radius = jnp.asarray(max_radius)
+            chex.assert_tree_all_finite({"avg": avg_radius, "max": max_radius})
+
             # Avg radius should increase with multiplier
-            assert avg_radius > prev_avg
-            prev_avg = avg_radius
+            assert float(avg_radius) > prev_avg
+            prev_avg = float(avg_radius)
 
             # Max radius should remain constant (it's the actual max distance)
             if prev_max is not None:
-                assert abs(max_radius - prev_max) < 1e-10
-            prev_max = max_radius
+                assert abs(float(max_radius) - prev_max) < 1e-10
+            prev_max = float(max_radius)
 
     def test_off_center_mass(self):
         """Test with off-center mass distribution."""
@@ -116,9 +129,13 @@ class TestCalculateMolecularRadius:
             voxel, center, volume_mass, multiplier
         )
 
+        avg_radius = jnp.asarray(avg_radius)
+        max_radius = jnp.asarray(max_radius)
+        chex.assert_tree_all_finite({"avg": avg_radius, "max": max_radius})
+
         # Both should be positive
-        assert avg_radius > 0
-        assert max_radius > 0
+        assert float(avg_radius) > 0.0
+        assert float(max_radius) > 0.0
 
     def test_single_point_mass(self):
         """Test with a single point of mass."""
@@ -133,13 +150,17 @@ class TestCalculateMolecularRadius:
             voxel, center, volume_mass, multiplier
         )
 
+        avg_radius = jnp.asarray(avg_radius)
+        max_radius = jnp.asarray(max_radius)
+        chex.assert_tree_all_finite({"avg": avg_radius, "max": max_radius})
+
         # For a single point, both should be positive
-        assert avg_radius > 0
-        assert max_radius > 0
+        assert float(avg_radius) > 0.0
+        assert float(max_radius) > 0.0
 
         # Max should be the actual distance, avg should be multiplied version
         expected_distance = np.sqrt(3 * (2.0**2))
-        assert abs(max_radius - expected_distance) < 0.1
+        assert abs(float(max_radius) - expected_distance) < 0.1
 
     def test_uniform_distribution(self):
         """Test with uniform mass distribution."""
@@ -152,9 +173,13 @@ class TestCalculateMolecularRadius:
             voxel, center, volume_mass, multiplier
         )
 
+        avg_radius = jnp.asarray(avg_radius)
+        max_radius = jnp.asarray(max_radius)
+        chex.assert_tree_all_finite({"avg": avg_radius, "max": max_radius})
+
         # For uniform distribution, values should be reasonable
-        assert avg_radius > 0
-        assert max_radius > 0
+        assert float(avg_radius) > 0.0
+        assert float(max_radius) > 0.0
 
     def test_output_types(self, centered_mass):
         """Test that output types are correct."""
@@ -166,8 +191,9 @@ class TestCalculateMolecularRadius:
             centered_mass, center, volume_mass, multiplier
         )
 
-        assert isinstance(avg_radius, (float, np.floating))
-        assert isinstance(max_radius, (float, np.floating))
+        # convert to Python floats to validate types
+        assert isinstance(float(avg_radius), float)
+        assert isinstance(float(max_radius), float)
 
     def test_zero_volume_mass(self):
         """Test behavior with zero volume mass - should raise ValueError."""
@@ -194,11 +220,15 @@ class TestCalculateMolecularRadius:
             voxel, center, volume_mass, multiplier
         )
 
+        avg_radius = jnp.asarray(avg_radius)
+        max_radius = jnp.asarray(max_radius)
+        chex.assert_tree_all_finite({"avg": avg_radius, "max": max_radius})
+
         # Both radii should be positive
-        assert avg_radius > 0
-        assert max_radius > 0
+        assert float(avg_radius) > 0.0
+        assert float(max_radius) > 0.0
 
         # For elongated distribution, max_radius reflects actual maximum distance
         # avg_radius is the weighted average multiplied by the multiplier
         # With multiplier > 1, avg_radius can exceed max_radius
-        assert max_radius < 10.0  # Reasonable upper bound for this distribution
+        assert float(max_radius) < 10.0  # Reasonable upper bound for this distribution

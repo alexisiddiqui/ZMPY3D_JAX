@@ -3,24 +3,21 @@
 
 from typing import Sequence, Tuple
 
-import numpy as np
+import chex
+import jax.numpy as jnp
+
+from ZMPY3D_JAX.config import COMPLEX_DTYPE
 
 
-def get_mean_invariant03(zm_list: Sequence[np.ndarray]) -> Tuple[np.ndarray, np.ndarray]:
+def get_mean_invariant03(zm_list: Sequence[chex.Array]) -> Tuple[chex.Array, chex.Array]:
     """Calculates the mean and standard deviation of a list of Zernike moment arrays,
     typically representing different rotations of a molecule.
-
-    Args:
-        zm_list (list): A list of NumPy arrays, where each array contains Zernike moments.
-
-    Returns:
-        tuple: A tuple containing:
-            - zm_mean (np.ndarray): The mean of the Zernike moments.
-            - zm_std (np.ndarray): The standard deviation of the Zernike moments.
     """
-    all_zm = np.abs(np.stack(zm_list, axis=3))
+    # ensure complex JAX arrays, stack along a new axis 3
+    stacked = jnp.stack([jnp.asarray(z, dtype=COMPLEX_DTYPE) for z in zm_list], axis=3)
+    all_zm = jnp.abs(stacked)
 
-    zm_mean = np.mean(all_zm, axis=3)
-    zm_std = np.std(all_zm, axis=3, ddof=1)
+    zm_mean = jnp.mean(all_zm, axis=3)
+    zm_std = jnp.std(all_zm, axis=3, ddof=1)
 
     return zm_mean, zm_std

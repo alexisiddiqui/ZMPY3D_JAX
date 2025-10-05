@@ -4,12 +4,15 @@
 
 from typing import Dict, Tuple
 
-import numpy as np
+import chex
+import jax.numpy as jnp
+
+from ZMPY3D_JAX.config import FLOAT_DTYPE
 
 
 def get_bbox_moment_xyz_sample01(
-    center: np.ndarray, radius: float, dimension_bbox_scaled: Tuple[int, int, int]
-) -> Dict[str, np.ndarray]:
+    center: chex.Array, radius: chex.Array, dimension_bbox_scaled: Tuple[int, int, int]
+) -> Dict[str, chex.Array]:
     """Generates normalized sample coordinates (X, Y, Z) for a bounding box,
     centered at a given point and scaled by a radius. These samples are used
     for calculating Zernike moments.
@@ -24,11 +27,14 @@ def get_bbox_moment_xyz_sample01(
         dict: A dictionary containing 'X_sample', 'Y_sample', and 'Z_sample' NumPy arrays
               of the normalized sample coordinates.
     """
+    center = jnp.asarray(center, dtype=FLOAT_DTYPE)
+    radius = jnp.asarray(radius, dtype=FLOAT_DTYPE)
+
     x_edge, y_edge, z_edge = dimension_bbox_scaled
 
-    x_sample = (np.arange(x_edge + 1) - center[0]) / radius
-    y_sample = (np.arange(y_edge + 1) - center[1]) / radius
-    z_sample = (np.arange(z_edge + 1) - center[2]) / radius
+    x_sample = (jnp.arange(x_edge + 1, dtype=FLOAT_DTYPE) - center[0]) / radius
+    y_sample = (jnp.arange(y_edge + 1, dtype=FLOAT_DTYPE) - center[1]) / radius
+    z_sample = (jnp.arange(z_edge + 1, dtype=FLOAT_DTYPE) - center[2]) / radius
 
     xyz_sample_struct = {"X_sample": x_sample, "Y_sample": y_sample, "Z_sample": z_sample}
 

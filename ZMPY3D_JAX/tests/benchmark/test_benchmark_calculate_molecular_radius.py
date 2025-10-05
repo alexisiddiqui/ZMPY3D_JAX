@@ -9,6 +9,9 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+import chex
+import jax
+import jax.numpy as jnp
 import numpy as np
 import pytest
 
@@ -51,7 +54,8 @@ class TestCalculateMolecularRadius:
 
     def test_spherical_distribution(self, spherical_voxel):
         """Test radius calculation with spherical distribution."""
-        center = np.array([10.0, 10.0, 10.0])
+        # use jax arrays for centers
+        center = jnp.array([10.0, 10.0, 10.0])
         volume_mass = np.sum(spherical_voxel)
         multiplier = 1.80
 
@@ -59,23 +63,28 @@ class TestCalculateMolecularRadius:
             spherical_voxel, center, volume_mass, multiplier
         )
 
+        # JAX compatibility: convert to jax arrays and assert finiteness
+        avg_radius = jnp.asarray(avg_radius)
+        max_radius = jnp.asarray(max_radius)
+        chex.assert_tree_all_finite({"avg": avg_radius, "max": max_radius})
+
         # Average radius should be positive
-        assert avg_radius > 0
+        assert float(avg_radius) > 0.0
 
         # Max radius should be positive and reasonable for a sphere of radius 5
-        assert max_radius > 0
-        assert max_radius <= 5.0 * np.sqrt(3)  # Maximum possible distance in sphere
+        assert float(max_radius) > 0.0
+        assert float(max_radius) <= 5.0 * np.sqrt(3)  # Maximum possible distance in sphere
 
         # For a sphere, average radius with multiplier should be reasonable
-        assert 3.0 < avg_radius < 10.0
+        assert 3.0 < float(avg_radius) < 10.0
 
         # The multiplier increases avg_radius, so it may exceed max_radius
         # Max radius is the actual maximum distance, avg is weighted and multiplied
-        assert max_radius > 0 and avg_radius > 0
+        assert float(max_radius) > 0 and float(avg_radius) > 0
 
     def test_centered_mass(self, centered_mass):
         """Test with a simple centered mass."""
-        center = np.array([5.0, 5.0, 5.0])
+        center = jnp.array([5.0, 5.0, 5.0])
         volume_mass = np.sum(centered_mass)
         multiplier = 1.80
 
@@ -83,21 +92,25 @@ class TestCalculateMolecularRadius:
             centered_mass, center, volume_mass, multiplier
         )
 
+        avg_radius = jnp.asarray(avg_radius)
+        max_radius = jnp.asarray(max_radius)
+        chex.assert_tree_all_finite({"avg": avg_radius, "max": max_radius})
+
         # Both radii should be positive
-        assert avg_radius > 0
-        assert max_radius > 0
+        assert float(avg_radius) > 0.0
+        assert float(max_radius) > 0.0
 
         # Both should be reasonable values
-        assert avg_radius < 10.0
-        assert max_radius < 10.0
+        assert float(avg_radius) < 10.0
+        assert float(max_radius) < 10.0
 
     def test_different_multipliers(self, centered_mass):
         """Test with different radius multipliers."""
-        center = np.array([5.0, 5.0, 5.0])
+        center = jnp.array([5.0, 5.0, 5.0])
         volume_mass = np.sum(centered_mass)
 
         multipliers = [1.0, 1.5, 1.8, 2.0, 2.5]
-        prev_avg = 0
+        prev_avg = 0.0
         prev_max = None
 
         for multiplier in multipliers:
@@ -105,21 +118,25 @@ class TestCalculateMolecularRadius:
                 centered_mass, center, volume_mass, multiplier
             )
 
+            avg_radius = jnp.asarray(avg_radius)
+            max_radius = jnp.asarray(max_radius)
+            chex.assert_tree_all_finite({"avg": avg_radius, "max": max_radius})
+
             # Avg radius should increase with multiplier
-            assert avg_radius > prev_avg
-            prev_avg = avg_radius
+            assert float(avg_radius) > prev_avg
+            prev_avg = float(avg_radius)
 
             # Max radius should remain constant (it's the actual max distance)
             if prev_max is not None:
-                assert abs(max_radius - prev_max) < 1e-10
-            prev_max = max_radius
+                assert abs(float(max_radius) - prev_max) < 1e-10
+            prev_max = float(max_radius)
 
     def test_off_center_mass(self):
         """Test with off-center mass distribution."""
         voxel = np.zeros((15, 15, 15))
         voxel[10:13, 10:13, 10:13] = 2.0
 
-        center = np.array([7.5, 7.5, 7.5])
+        center = jnp.array([7.5, 7.5, 7.5])
         volume_mass = np.sum(voxel)
         multiplier = 1.80
 
@@ -127,16 +144,20 @@ class TestCalculateMolecularRadius:
             voxel, center, volume_mass, multiplier
         )
 
+        avg_radius = jnp.asarray(avg_radius)
+        max_radius = jnp.asarray(max_radius)
+        chex.assert_tree_all_finite({"avg": avg_radius, "max": max_radius})
+
         # Both should be positive
-        assert avg_radius > 0
-        assert max_radius > 0
+        assert float(avg_radius) > 0.0
+        assert float(max_radius) > 0.0
 
     def test_single_point_mass(self):
         """Test with a single point of mass."""
         voxel = np.zeros((10, 10, 10))
         voxel[7, 7, 7] = 1.0
 
-        center = np.array([5.0, 5.0, 5.0])
+        center = jnp.array([5.0, 5.0, 5.0])
         volume_mass = 1.0
         multiplier = 1.80
 
@@ -144,18 +165,22 @@ class TestCalculateMolecularRadius:
             voxel, center, volume_mass, multiplier
         )
 
+        avg_radius = jnp.asarray(avg_radius)
+        max_radius = jnp.asarray(max_radius)
+        chex.assert_tree_all_finite({"avg": avg_radius, "max": max_radius})
+
         # For a single point, both should be positive
-        assert avg_radius > 0
-        assert max_radius > 0
+        assert float(avg_radius) > 0.0
+        assert float(max_radius) > 0.0
 
         # Max should be the actual distance, avg should be multiplied version
         expected_distance = np.sqrt(3 * (2.0**2))
-        assert abs(max_radius - expected_distance) < 0.1
+        assert abs(float(max_radius) - expected_distance) < 0.1
 
     def test_uniform_distribution(self):
         """Test with uniform mass distribution."""
         voxel = np.ones((8, 8, 8))
-        center = np.array([3.5, 3.5, 3.5])
+        center = jnp.array([3.5, 3.5, 3.5])
         volume_mass = np.sum(voxel)
         multiplier = 1.80
 
@@ -163,13 +188,17 @@ class TestCalculateMolecularRadius:
             voxel, center, volume_mass, multiplier
         )
 
+        avg_radius = jnp.asarray(avg_radius)
+        max_radius = jnp.asarray(max_radius)
+        chex.assert_tree_all_finite({"avg": avg_radius, "max": max_radius})
+
         # For uniform distribution, values should be reasonable
-        assert avg_radius > 0
-        assert max_radius > 0
+        assert float(avg_radius) > 0.0
+        assert float(max_radius) > 0.0
 
     def test_output_types(self, centered_mass):
         """Test that output types are correct."""
-        center = np.array([5.0, 5.0, 5.0])
+        center = jnp.array([5.0, 5.0, 5.0])
         volume_mass = np.sum(centered_mass)
         multiplier = 1.80
 
@@ -177,13 +206,18 @@ class TestCalculateMolecularRadius:
             centered_mass, center, volume_mass, multiplier
         )
 
-        assert isinstance(avg_radius, (float, np.floating))
-        assert isinstance(max_radius, (float, np.floating))
+        # convert to JAX arrays and python floats to validate types
+        avg_radius = jnp.asarray(avg_radius)
+        max_radius = jnp.asarray(max_radius)
+        chex.assert_tree_all_finite({"avg": avg_radius, "max": max_radius})
+
+        assert isinstance(float(avg_radius), float)
+        assert isinstance(float(max_radius), float)
 
     def test_zero_volume_mass(self):
         """Test behavior with zero volume mass - should raise ValueError."""
         voxel = np.zeros((10, 10, 10))
-        center = np.array([5.0, 5.0, 5.0])
+        center = jnp.array([5.0, 5.0, 5.0])
         volume_mass = 0.0
         multiplier = 1.80
 
@@ -197,7 +231,7 @@ class TestCalculateMolecularRadius:
         # Create elongated distribution along x-axis
         voxel[5:15, 4:6, 4:6] = 1.0
 
-        center = np.array([10.0, 5.0, 5.0])
+        center = jnp.array([10.0, 5.0, 5.0])
         volume_mass = np.sum(voxel)
         multiplier = 1.80
 
@@ -205,30 +239,38 @@ class TestCalculateMolecularRadius:
             voxel, center, volume_mass, multiplier
         )
 
+        avg_radius = jnp.asarray(avg_radius)
+        max_radius = jnp.asarray(max_radius)
+        chex.assert_tree_all_finite({"avg": avg_radius, "max": max_radius})
+
         # Both radii should be positive
-        assert avg_radius > 0
-        assert max_radius > 0
+        assert float(avg_radius) > 0.0
+        assert float(max_radius) > 0.0
 
         # For elongated distribution, max_radius reflects actual maximum distance
         # avg_radius is the weighted average multiplied by the multiplier
         # With multiplier > 1, avg_radius can exceed max_radius
-        assert max_radius < 10.0  # Reasonable upper bound for this distribution
+        assert float(max_radius) < 10.0  # Reasonable upper bound for this distribution
 
     def test_time_evaluation_runtime(self, centered_mass):
         """Timed evaluation wrapper for calculate_molecular_radius."""
         repeats = _env_int("ZMPY3D_TIME_REPEATS", 10000)
         max_seconds = _env_int("ZMPY3D_TIME_MAX_SEC", 1200)
 
-        center = np.array([5.0, 5.0, 5.0])
+        center = jnp.array([5.0, 5.0, 5.0])
         volume_mass = np.sum(centered_mass)
         multiplier = 1.80
 
-        # Warm-up
-        _ = z.calculate_molecular_radius(centered_mass, center, volume_mass, multiplier)
+        # Warm-up: ensure any JIT compilation happens before timing
+        _res = z.calculate_molecular_radius(centered_mass, center, volume_mass, multiplier)
+        # block until result is ready (synchronize)
+        jax.device_get(_res)
 
         start = time.perf_counter()
         for _ in range(repeats):
-            _ = z.calculate_molecular_radius(centered_mass, center, volume_mass, multiplier)
+            res = z.calculate_molecular_radius(centered_mass, center, volume_mass, multiplier)
+            # block/synchronize to measure execution cost for JAX
+            jax.device_get(res)
         elapsed = time.perf_counter() - start
 
         # Save detailed timing information to log file (like test_time_simple.py)

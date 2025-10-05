@@ -9,7 +9,8 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 import ZMPY3D_JAX as z
-from ZMPY3D_JAX.tests.utils.pdbFixture import pdb_files, output_dir
+
+z.configure_for_scientific_computing(enable_x64=True)
 
 
 @pytest.fixture
