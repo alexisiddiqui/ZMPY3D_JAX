@@ -10,6 +10,7 @@ from datetime import datetime
 from pathlib import Path
 
 import chex
+import jax  # added import for jax.jit
 import jax.numpy as jnp
 import numpy as np
 import pytest
@@ -162,12 +163,16 @@ class TestCalculateABRotation:
 
         target_order = 2
 
-        # Warm-up
-        _ = z.calculate_ab_rotation(real_protein_zm, target_order)
+        # JIT the target function and warm-up (compilation happens on first call)
+        jit_calc = jax.jit(z.calculate_ab_rotation, static_argnames=("target_order2_norm_rotate",))
+        jit_calc = z.calculate_ab_rotation  # Disable JIT for benchmarking --- IGNORE ---
+
+        # Warm-up (compiles and runs once)
+        _ = jit_calc(real_protein_zm, target_order)
 
         start = time.perf_counter()
         for _ in range(repeats):
-            _ = z.calculate_ab_rotation(real_protein_zm, target_order)
+            _ = jit_calc(real_protein_zm, target_order)
         elapsed = time.perf_counter() - start
 
         # Save detailed timing information to log file (like test_time_simple.py)

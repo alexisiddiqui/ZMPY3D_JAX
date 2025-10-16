@@ -1,9 +1,4 @@
-# Array creation, slicing, and `jnp.diff` have direct `jax.numpy` equivalents.
-# `jnp.power` and `jnp.arange` are directly supported.
-# `jnp.tensordot` is available in `jax.numpy` and is a prime candidate for JAX acceleration.
-# `jnp.meshgrid` is available in `jax.numpy`.
-# Array transposition and element-wise division are directly supported.
-# This function is highly amenable to JAX transformation and would be very efficient.
+# JIT?
 
 from typing import Dict, Tuple
 

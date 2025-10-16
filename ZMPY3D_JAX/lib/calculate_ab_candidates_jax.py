@@ -1,3 +1,5 @@
+from functools import partial
+
 import chex
 import jax
 import jax.numpy as jnp
@@ -6,6 +8,7 @@ from ZMPY3D_JAX import config as _config
 from ZMPY3D_JAX.lib.eigen_root import batched_eigen_root
 
 
+@partial(jax.jit, static_argnames=("ind_real",))
 def compute_ab_candidates_jax(
     z_moment_raw: chex.Array, abconj_sol: chex.Array, ind_real: int
 ) -> tuple[chex.Array, chex.Array, chex.Array]:
