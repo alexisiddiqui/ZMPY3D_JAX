@@ -5,7 +5,7 @@
 # Array transposition and element-wise division are directly supported.
 # This function is highly amenable to JAX transformation and would be very efficient.
 
-from typing import Dict, Tuple
+from typing import Dict, Tuple, Union
 
 import chex
 import jax.numpy as jnp
@@ -13,14 +13,22 @@ import jax.numpy as jnp
 from ZMPY3D_JAX.config import FLOAT_DTYPE
 
 
+def _is_sparse(arr) -> bool:
+    """Check if array is a JAX sparse array."""
+    return hasattr(arr, "todense") or hasattr(arr, "toarray")
+
+
 def calculate_bbox_moment06(
-    voxel3d: chex.Array, max_order: int, xyz_sample_struct: Dict[str, chex.Array]
+    voxel3d: Union[chex.Array, "jax.experimental.sparse.JAXSparse"],
+    max_order: int,
+    xyz_sample_struct: Dict[str, chex.Array],
 ) -> Tuple[float, chex.Array, chex.Array]:
     """Calculates 3D bounding box moments up to a specified maximum order from a voxel density map.
     It uses `tensordot` for efficient computation.
 
     Args:
-        voxel3d (jnp.ndarray): A 3D NumPy array representing the voxel density map.
+        voxel3d (jnp.ndarray or JAX sparse array): A 3D NumPy array or JAX sparse array representing the voxel density map.
+            If sparse, will be converted to dense for computation.
         max_order (int): The maximum order for calculating bounding box moments.
         xyz_sample_struct (dict): A dictionary containing 'X_sample', 'Y_sample', and 'Z_sample'
             NumPy arrays of normalized sample coordinates.
@@ -31,6 +39,10 @@ def calculate_bbox_moment06(
             - center (jnp.ndarray): A 1D NumPy array representing the center of mass.
             - bbox_moment (jnp.ndarray): A 3D NumPy array of bounding box moments.
     """
+    # Convert sparse to dense if needed
+    if _is_sparse(voxel3d):
+        voxel3d = voxel3d.todense()
+
     voxel3d = jnp.asarray(voxel3d, dtype=FLOAT_DTYPE)
     extend_voxel3d = jnp.zeros(jnp.array(voxel3d.shape) + 1)
 
