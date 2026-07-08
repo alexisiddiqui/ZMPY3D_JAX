@@ -1,120 +1,143 @@
-# ZMPY3D
+# ZMPY3D_JAX
 
-**Update:**
-ZMPY3D PyTorch implementation is available (August 25, 2024).
+JAX-oriented fork of [ZMPY3D](https://github.com/tawssie/ZMPY3D), a Python implementation of 3D Zernike moments for protein structure volume analysis.
 
-ZMPY3D: accelerating protein structure volume analysis through vectorized 3D Zernike Moments and Python-based GPU Integration
+This repository keeps the structural-biology workflow from the original project: parse PDB CA traces, voxelize residues with Gaussian density boxes, compute geometric moments, convert them to 3D Zernike moments, derive rotation-invariant descriptors, and support shape comparison/superposition workflows.
 
-For CPU support only, please refer to the repository:
+The original NumPy implementation is included as a git submodule at:
 
-`ZMPY3D` supports `NumPy`
-(https://github.com/tawssie/ZMPY3D)
+```text
+externals/ZMPY3D
+```
 
-For GPU support with TensorFlow, CuPy and PyTorch, please refer to the other three repositories:
+Use it as the numerical reference while completing and validating this JAX port.
 
-`ZMPY3D_TF` supports `Tensorflow`
-(https://github.com/tawssie/ZMPY3D_TF)
+## Status
 
-`ZMPY3D_CP` supports `CuPy`
-(https://github.com/tawssie/ZMPY3D_CP)
+This is not yet a fully validated general-purpose Zernike moments library.
 
-`ZMPY3D_PT` supports `PyTorch`
-(https://github.com/tawssie/ZMPY3D_PT)
+Implemented or partially implemented:
 
-Here presents a Python-based software package, ZMPY3D, to accelerate the moments computation by vectorizing the mathematical formulae, enabling their computation in graphical processing units (GPUs). The package offers popular GPU-supported libraries such as CuPy and TensorFlow along with NumPy implementations, aiming to improve computational efficiency, adaptability, and flexibility in future algorithmic development. 
+- PDB CA-trace parsing for protein/nucleic-acid residue records.
+- Residue Gaussian density voxelization.
+- Bounding-box/geometric moment calculation.
+- Bounding-box moment to Zernike moment conversion.
+- 3DZD invariant descriptor generation.
+- Canterakis-style normalizing rotation workflows.
+- CLI entry points for ZM descriptors, shape score, batch descriptors, and superposition.
+- JAX conversions for several numerical kernels.
+
+Known gaps:
+
+- Some rotation-normalization code still uses NumPy and Python loops.
+- `calculate_ab_rotation_all` currently needs additional JAX work and validation.
+- Input handling is structural-biology-specific; arbitrary volumes and general point clouds need a separate public API.
+- Tests need golden-value comparisons against the upstream NumPy implementation and analytic/simple-shape fixtures.
+- Max-order 40 cache data is not included in the repository because of size.
 
 ## Installation
 
-**Prerequisites:**
-* ZMPY3D   : Python >=3.9.16, NumPy >=1.23.5
-* ZMPY3D_CP: Python >=3.9.16, NumPy, CuPy >=12.2.0
-* ZMPY3D_TF: Python >=3.9.16, NumPy >=1.23.5, Tensorflow >=2.12.0, Tensorflow-Probability >=0.20.1
-* ZMPY3D_PT: Python >=3.9.16, NumPy >=1.23.5, PyTorch >= 2.3.1
+Clone with submodules:
 
-1. Open the terminal
-2. Using pip to install the package through PyPI
-3. Run `pip install ZMPY3D` for the installation
+```bash
+git clone --recurse-submodules <repo-url>
+cd ZMPY3D_JAX
+```
 
+If the repository was already cloned:
 
-## Usage
-* 3D Zernike moments with Tensorflow: [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/tawssie/ZMPY3D/blob/main/ZMPY3D_demo_zm.ipynb)
-* Shape similarity with CuPy: [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/tawssie/ZMPY3D/blob/main/ZMPY3D_demo_shape.ipynb) 
-* Structure superposition with NumPy: [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/tawssie/ZMPY3D/blob/main/ZMPY3D_demo_super.ipynb)
-* Runtime evaluation: [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/tawssie/ZMPY3D/blob/main/ZMPY3D_time_evaluation.ipynb) 
+```bash
+git submodule update --init --recursive
+```
 
-## Performances
+Install in editable mode:
 
-A voxel cube with dimensions of 100x100x100 was applied to perform 10,000 3D Zernike moment calculations, using 2 different maximum orders 20 and 40.
-Execution times for different hardware configurations using TensorFlow, CuPy, and NumPy libraries:
+```bash
+python -m pip install -e .
+```
 
-### NumPy
+Runtime requirements are declared in `pyproject.toml`.
 
-| Order | CPU1       | CPU2       |
-|-------|------------|------------|
-| 20    | 33m20s     | 14m1s      |
-| 40    | 951m40s    | 338m20s    |
+## Quick Start
 
+Compute descriptors from a PDB file:
 
-### TensorFlow
+```bash
+ZMPY3D_CLI_ZM 6NT5.pdb 1.0 6 5 2
+```
 
-| Order |            T4 |            RX3070Ti |            V100 |            L4 | 
-|-------|---------------|---------------------|-----------------|---------------|
-| 20    | 1m1s          | 0m36s               | 0m31s           | 0m39s         | 
-| 40    | 24m40s        | 9m3s                | 10m54s          | 11m13s        | 
+Arguments:
 
-### CuPy
-| Order |      T4 |      RX3070Ti |      V100 |      L4 |
-|-------|---------|---------------|-----------|---------|
-| 20    | 4m45s   | 2m30s         | 1m42s     | 2m50s   |
-| 40    | 35m20s  | 19m19s        | 14m45s    | 18m40s  |
+- `PDBFile`: input `.pdb` or `.txt` file in legacy PDB text format.
+- `GridWidth`: voxel width; currently accepted CLI values are `0.25`, `0.50`, or `1.00`.
+- `MaximumOrder`: currently accepted CLI values are `6`, `20`, or `40`.
+- `NormOrder`: maximum normalization order, from `2` to `MaximumOrder`.
+- `Mode`: `0` for Canterakis normalization, `1` for 3DZD invariant, `2` for both.
 
-Note: m = minutes, s = seconds.
+Use the Python API:
 
-## Cache data for order 40
+```python
+import ZMPY3D_JAX as z
 
-Due to GitHub's file size limitations, follow these steps to download the cache data for order 40 (1.3G) in the ZMPY3D package:
+z.configure_for_scientific_computing(enable_x64=True, platform="cpu")
 
-### 1. Locate Package Folder
+descriptor = z.ZMPY3D_CLI_ZM(
+    "6NT5.pdb",
+    GridWidth=1.0,
+    MaxOrder=6,
+    MaxTargetOrder2NormRotate=5,
+    Mode=2,
+)
+```
 
-- Open your terminal and execute the following command to find the folder of the ZMPY3D package:
-- `python -c "import ZMPY3D; print(ZMPY3D.__file__)"`
-- Note the path, which ends with `/User/path/ptyhon/site-packages/ZMPY3D/__init__.py`.
+## Cache Data
 
-### 2. Navigate to Cache Data Folder
-- Go to the `cache_data` folder at the same level as `__init__.py` file, i.e., `/User/path/ptyhon/site-packages/ZMPY3D/cache_data`.
+The repository includes cache files for lower-order workflows:
 
-### 3. Download the Cache File:
-- Download the 1.3 GB max order 40 `.pkl` file to the `cache_data` folder from the link below. https://drive.google.com/uc?id=1RR1rF_5YJqaxNC5AK0Ie_8MswGb0Tttw
+```text
+ZMPY3D_JAX/cache_data/BinomialCache.pkl
+ZMPY3D_JAX/cache_data/LogG_CLMCache_MaxOrder06.pkl
+ZMPY3D_JAX/cache_data/LogG_CLMCache_MaxOrder20.pkl
+```
 
-## Further reading: What can 3D Zernike moments do?
-- Enhancing fold classification
-  * [Real-time structure search and structure classification for AlphaFold protein models](https://doi.org/10.1038/s42003-022-03261-8)
-  * [Real time structural search of the Protein Data Bank](https://doi.org/10.1371/journal.pcbi.1007970)
-- Facilitating structural superpositions
-  * [ZEAL: Protein structure alignment based on shape similarity](https://doi.org/10.1093/bioinformatics/btab205)
-- Supporting protein docking
-  * [Protein-protein docking using region-based 3D Zernike descriptors](https://doi.org/10.1186/1471-2105-10-407)
-- Assisting molecular dynamics
-  * [Binding site identification of G protein-coupled receptors through a 3D Zernike polynomials-based method: application to C. elegans olfactory receptors](https://doi.org/10.1007/s10822-021-00434-1)
-  * [Quantitative characterization of binding pockets and binding complementarity by means of zernike descriptors](https://doi.org/10.1021/acs.jcim.9b01066)
-- Enabling structure-based virtual screening
-  * [PL-PatchSurfer3: Improved Structure-Based Virtual Screening for Structure Variation Using 3D Zernike Descriptors](https://doi.org/10.1101/2024.02.22.581511)
-- Forecasting interacting interfaces
-  * [Antibody interface prediction with 3D Zernike descriptors and SVM](https://doi.org/10.1093/bioinformatics/bty918)
-  * [Exploring the potential of 3D Zernike descriptors and SVM for protein-protein interface prediction](https://doi.org/10.1186/s12859-018-2043-3)
+The max-order 40 cache is large and should be downloaded separately when needed. The original project documents the order-40 cache source; place the resulting file here:
 
-## Contributing
+```text
+ZMPY3D_JAX/cache_data/LogG_CLMCache_MaxOrder40.pkl
+```
 
-Feel free to submit pull requests for improvements or bug fixes.
+## Development
 
-************************* 
+Run tests:
 
+```bash
+pytest
+```
+
+Run a focused module test:
+
+```bash
+pytest ZMPY3D_JAX/tests/module/test_calculate_bbox_moment.py
+```
+
+The upstream submodule is intended for parity checks. A useful next validation target is a golden-test suite that computes fixtures with `externals/ZMPY3D` and compares this package within explicit tolerances.
+
+## Package Layout
+
+```text
+ZMPY3D_JAX/
+  cache_data/      precomputed binomial/G/CLM caches
+  lib/             numerical kernels and IO helpers
+  tests/           module, integration, and benchmark tests
+externals/ZMPY3D/  upstream NumPy reference implementation
+```
 
 ## Citation
 
-Lai, J. S., Burley, S. K., & Duarte, J. M. (2024). ZMPY3D: Accelerating protein structure volume analysis through vectorized 3D Zernike moments and Python-based GPU integration. (Bioinformatics Advances, vbae111, https://doi.org/10.1093/bioadv/vbae111)
+If you use this work, cite the original ZMPY3D paper:
+
+Lai, J. S., Burley, S. K., & Duarte, J. M. (2024). ZMPY3D: Accelerating protein structure volume analysis through vectorized 3D Zernike moments and Python-based GPU integration. Bioinformatics Advances, vbae111. https://doi.org/10.1093/bioadv/vbae111
 
 ## License
 
-This project is licensed under the GNU General Public License v3.0. You can view the full license [here](https://www.gnu.org/licenses/gpl-3.0.en.html).
-
+This fork retains the repository license in `LICENSE`. Check the upstream submodule for its own license and attribution details.

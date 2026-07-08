@@ -1,0 +1,3 @@
+[submodule "externals/ZMPY3D"]
+	path = externals/ZMPY3D
+	url = https://github.com/tawssie/ZMPY3D.git

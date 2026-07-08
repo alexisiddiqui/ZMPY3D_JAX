@@ -1,0 +1,59 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ZMPY3D_JAX"
+version = "0.0.2"
+description = "JAX-oriented fork of ZMPY3D for 3D Zernike moments in structural biology workflows"
+readme = "README.md"
+requires-python = ">=3.11.6"
+license = { file = "LICENSE" }
+authors = [
+  { name = "Jhih Siang (Sean) Lai", email = "js.lai@uqconnect.edu.au" },
+  { name = "ZMPY3D_JAX contributors" },
+]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
+  "Operating System :: OS Independent",
+  "Topic :: Scientific/Engineering :: Bio-Informatics",
+  "Topic :: Scientific/Engineering :: Mathematics",
+]
+dependencies = [
+  "chex",
+  "gdown",
+  "jax>=0.7.1",
+  "jaxlib",
+  "numpy>=1.23.5",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest",
+]
+notebooks = [
+  "ipykernel",
+  "py3Dmol",
+]
+
+[project.urls]
+Homepage = "https://github.com/tawssie/ZMPY3D"
+Upstream = "https://github.com/tawssie/ZMPY3D"
+
+[project.scripts]
+ZMPY3D_CLI_ZM = "ZMPY3D_JAX.ZMPY3D_CLI_ZM:main"
+ZMPY3D_CLI_SuperA2B = "ZMPY3D_JAX.ZMPY3D_CLI_SuperA2B:main"
+ZMPY3D_CLI_ShapeScore = "ZMPY3D_JAX.ZMPY3D_CLI_ShapeScore:main"
+ZMPY3D_CLI_BatchSuperA2B = "ZMPY3D_JAX.ZMPY3D_CLI_BatchSuperA2B:main"
+ZMPY3D_CLI_BatchShapeScore = "ZMPY3D_JAX.ZMPY3D_CLI_BatchShapeScore:main"
+ZMPY3D_CLI_BatchZM = "ZMPY3D_JAX.ZMPY3D_CLI_BatchZM:main"
+
+[tool.setuptools.packages.find]
+include = ["ZMPY3D_JAX*"]
+
+[tool.setuptools.package-data]
+ZMPY3D_JAX = ["cache_data/*.pkl"]
+
+[tool.pytest.ini_options]
+testpaths = ["ZMPY3D_JAX/tests"]
