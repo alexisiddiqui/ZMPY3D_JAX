@@ -44,7 +44,7 @@ class TestCalculateABRotation:
             ]
         )
 
-        aa_names = ["CA"] * len(xyz)
+        aa_names = ["ALA"] * len(xyz)
         grid_width = 1.0
         max_order = 6
 
@@ -219,7 +219,7 @@ class TestCalculateABRotationAll:
             ]
         )
 
-        aa_names = ["CA"] * len(xyz)
+        aa_names = ["ALA"] * len(xyz)
         grid_width = 1.0
         max_order = 6
 
@@ -355,7 +355,7 @@ class TestCalculateABRotationAll:
             ]
         )
 
-        aa_names_a = ["CA"] * len(xyz_a)
+        aa_names_a = ["ALA"] * len(xyz_a)
         grid_width = 1.0
         max_order = 6
 

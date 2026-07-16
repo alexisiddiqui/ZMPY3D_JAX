@@ -57,3 +57,7 @@ ZMPY3D_JAX = ["cache_data/*.pkl"]
 
 [tool.pytest.ini_options]
 testpaths = ["ZMPY3D_JAX/tests"]
+addopts = "-m 'not benchmark'"
+markers = [
+  "benchmark: performance and timing tests excluded from the default suite",
+]

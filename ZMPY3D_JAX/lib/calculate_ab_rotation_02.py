@@ -27,7 +27,8 @@ def calculate_ab_rotation_02(
 
     Mathematical Background:
     ------------------------
-    The Cayley-Klein parameters a and b define a rotation R(a,b) with the constraint |a| + |b| = 1.
+    The Cayley-Klein parameters a and b define a rotation R(a,b) with the constraint
+    ``|a|² + |b|² = 1``.
     The normalization procedure fixes rotational degrees of freedom by setting selected moments
     to predefined values (typically zero), which requires solving a system of polynomial equations.
 
@@ -54,7 +55,7 @@ def calculate_ab_rotation_02(
 
     Returns:
         np.ndarray: Array of shape (n_solutions, 2) where each row contains complex [a, b] parameters
-            representing valid Cayley-Klein rotation parameters satisfying |a| + |b| = 1.
+            representing valid Cayley-Klein rotation parameters satisfying ``|a|² + |b|² = 1``.
             Multiple solutions may exist due to symmetry ambiguities.
 
     References:

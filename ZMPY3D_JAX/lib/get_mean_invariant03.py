@@ -6,7 +6,7 @@ from typing import Sequence, Tuple
 import chex
 import jax.numpy as jnp
 
-from ZMPY3D_JAX.config import COMPLEX_DTYPE
+import ZMPY3D_JAX.config as _config
 
 
 def get_mean_invariant03(zm_list: Sequence[chex.Array]) -> Tuple[chex.Array, chex.Array]:
@@ -14,7 +14,9 @@ def get_mean_invariant03(zm_list: Sequence[chex.Array]) -> Tuple[chex.Array, che
     typically representing different rotations of a molecule.
     """
     # ensure complex JAX arrays, stack along a new axis 3
-    stacked = jnp.stack([jnp.asarray(z, dtype=COMPLEX_DTYPE) for z in zm_list], axis=3)
+    stacked = jnp.stack(
+        [jnp.asarray(z, dtype=_config.COMPLEX_DTYPE) for z in zm_list], axis=3
+    )
     all_zm = jnp.abs(stacked)
 
     zm_mean = jnp.mean(all_zm, axis=3)

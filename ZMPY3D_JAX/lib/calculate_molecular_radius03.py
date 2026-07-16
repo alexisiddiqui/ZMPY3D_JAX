@@ -6,7 +6,7 @@ from typing import Sequence, Tuple
 import chex
 import jax.numpy as jnp
 
-from ZMPY3D_JAX.config import FLOAT_DTYPE
+import ZMPY3D_JAX.config as _config
 
 
 def calculate_molecular_radius03(
@@ -18,10 +18,10 @@ def calculate_molecular_radius03(
     """Calculates the average and maximum molecular radii from a 3D voxel density map,
     given the center of mass, total volume/mass, and a default radius multiplier.
     """
-    voxel3d = jnp.asarray(voxel3d, dtype=FLOAT_DTYPE)
-    center = jnp.asarray(center, dtype=FLOAT_DTYPE)
-    volume_mass = jnp.asarray(volume_mass, dtype=FLOAT_DTYPE)
-    default_radius_multiplier = jnp.asarray(default_radius_multiplier, dtype=FLOAT_DTYPE)
+    voxel3d = jnp.asarray(voxel3d, dtype=_config.FLOAT_DTYPE)
+    center = jnp.asarray(center, dtype=_config.FLOAT_DTYPE)
+    volume_mass = jnp.asarray(volume_mass, dtype=_config.FLOAT_DTYPE)
+    default_radius_multiplier = jnp.asarray(default_radius_multiplier, dtype=_config.FLOAT_DTYPE)
 
     has_weight = voxel3d > 0
 
@@ -29,7 +29,7 @@ def calculate_molecular_radius03(
 
     x_coord, y_coord, z_coord = jnp.where(has_weight)
 
-    voxel_list_xyz = jnp.stack([x_coord, y_coord, z_coord], axis=1).astype(FLOAT_DTYPE)
+    voxel_list_xyz = jnp.stack([x_coord, y_coord, z_coord], axis=1).astype(_config.FLOAT_DTYPE)
 
     voxel_dist2center_squared = jnp.sum((voxel_list_xyz - center) ** 2, axis=1)
 

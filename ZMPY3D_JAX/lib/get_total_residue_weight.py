@@ -11,7 +11,7 @@ def get_total_residue_weight(
 ) -> float:
     """Calculates the total residue weight of a protein given a list of amino acid names
     and a mapping of amino acid names to their weights.
-    Defaults to 'ASP' if an amino acid name is not found in the map.
+    Unknown residue names raise ``ValueError`` instead of being silently substituted.
 
     Args:
         aa_name_list (list): A list of three-letter amino acid codes.
@@ -22,10 +22,12 @@ def get_total_residue_weight(
     """
     weight_multiplier = 1
 
+    unknown = sorted({name for name in aa_name_list if name not in residue_weight_map})
+    if unknown:
+        raise ValueError(f"Unknown residue name(s): {', '.join(unknown)}")
+
     total_residue_weight = 0
     for aa_name in aa_name_list:
-        if aa_name not in residue_weight_map:
-            aa_name = "ASP"
         total_residue_weight += residue_weight_map[aa_name] * weight_multiplier
 
     return total_residue_weight

@@ -1,35 +1,29 @@
-import urllib.request
 from pathlib import Path
 
 import pytest
 
 
 @pytest.fixture
-def pdb_files(tmp_path):
-    """
-    Fixture to download PDB files for testing.
-
-    Returns a dictionary with PDB file paths.
-    """
-    pdb_urls = {
-        "6NT5": "https://github.com/tawssie/ZMPY3D/raw/main/6NT5.pdb",
-        "6NT6": "https://github.com/tawssie/ZMPY3D/raw/main/6NT6.pdb",
-    }
-
-    pdb_paths = {}
-    for name, url in pdb_urls.items():
-        file_path = tmp_path / f"{name}.pdb"
-        urllib.request.urlretrieve(url, file_path)
-        pdb_paths[name] = str(file_path)
-
-    return pdb_paths
+def pdb_files():
+    """Return committed PDB fixtures without requiring network access."""
+    repo_root = Path(__file__).resolve().parents[2]
+    paths = {name: repo_root / f"{name}.pdb" for name in ("6NT5", "6NT6")}
+    missing = [str(path) for path in paths.values() if not path.is_file()]
+    if missing:
+        pytest.fail(f"Missing committed PDB fixture(s): {', '.join(missing)}")
+    return {name: str(path) for name, path in paths.items()}
 
 
 @pytest.fixture
-def output_dir():
-    """
-    Fixture to create and return the output directory path.
-    """
-    output_path = Path(__file__).parent / "integration" / "_super_output"
+def output_dir(tmp_path):
+    """Create integration artifacts outside the source tree."""
+    output_path = tmp_path / "super_output"
     output_path.mkdir(parents=True, exist_ok=True)
     return output_path
+
+
+def pytest_collection_modifyitems(items):
+    """Keep performance tests out of the default correctness suite."""
+    for item in items:
+        if "benchmark" in Path(str(item.fspath)).parts:
+            item.add_marker(pytest.mark.benchmark)

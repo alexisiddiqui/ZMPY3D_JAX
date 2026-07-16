@@ -1,12 +1,96 @@
-# The initial complex arithmetic and logarithmic power calculations are highly suitable for JAX.
-# The conditional logic for `f_exp` can be handled with `jax.numpy.where`.
-# The loop over `zm_rotated_list` needs to be vectorized or transformed using `jax.lax.scan` or `jax.vmap`.
-# The `np.add.at` operation is a major challenge. In JAX, this would typically be replaced by `jax.ops.index_add` or by re-thinking the accumulation as a functional update, possibly using `jax.scipy.special.logsumexp` if the sum is over exponentials.
-# Array reshaping and transposing are directly supported by `jax.numpy`.
-
 from typing import List
 
+import chex
+import jax
+import jax.numpy as jnp
 import numpy as np
+
+import ZMPY3D_JAX.config as _config
+
+
+def _calculate_zm_by_ab_rotation_jax(
+    z_moment_raw: chex.Array,
+    binomial_cache: chex.Array,
+    ab_list: chex.Array,
+    max_order: int,
+    clm_cache: chex.Array,
+    s_id: chex.Array,
+    n: chex.Array,
+    l: chex.Array,
+    m: chex.Array,
+    mu: chex.Array,
+    k: chex.Array,
+    is_nlm_value: chex.Array,
+) -> chex.Array:
+    """Vectorized rotation kernel with one output array per ``(a, b)`` pair."""
+    complex_dtype = _config.COMPLEX_DTYPE
+    float_dtype = _config.FLOAT_DTYPE
+
+    z_moment_raw = jnp.asarray(z_moment_raw, dtype=complex_dtype)
+    binomial_cache = jnp.asarray(binomial_cache, dtype=float_dtype)
+    ab_list = jnp.asarray(ab_list, dtype=complex_dtype).reshape((-1, 2))
+    clm_cache = jnp.asarray(clm_cache, dtype=float_dtype)
+    s_id = jnp.asarray(s_id, dtype=jnp.int32)
+    n = jnp.asarray(n, dtype=jnp.int32)
+    l = jnp.asarray(l, dtype=jnp.int32)
+    m = jnp.asarray(m, dtype=jnp.int32)
+    mu = jnp.asarray(mu, dtype=jnp.int32)
+    k = jnp.asarray(k, dtype=jnp.int32)
+    is_nlm_value = jnp.asarray(is_nlm_value, dtype=jnp.int32)
+
+    positive_mu = z_moment_raw[n, l, jnp.abs(mu)]
+    negative_phase = jnp.where(mu % 2 == 0, 1.0, -1.0).astype(complex_dtype)
+    f = jnp.where(mu >= 0, positive_mu, negative_phase * jnp.conj(positive_mu))
+    nonzero_f = f != 0
+    log_f = jnp.where(nonzero_f, jnp.log(f), jnp.zeros_like(f))
+
+    max_n = max_order + 1
+    clm = jnp.asarray(clm_cache[l * max_n + m], dtype=complex_dtype).reshape(-1)
+    binomial = jnp.asarray(
+        binomial_cache[l - mu, k - mu] + binomial_cache[l + mu, k - m],
+        dtype=complex_dtype,
+    )
+    output_size = z_moment_raw.size
+    nan_value = jnp.asarray(jnp.nan + 0j, dtype=complex_dtype)
+
+    def format_output(z_nlm):
+        flat = jnp.full((output_size,), nan_value, dtype=complex_dtype)
+        flat = flat.at[is_nlm_value].set(z_nlm)
+        return jnp.transpose(flat.reshape(z_moment_raw.shape), (2, 1, 0))
+
+    def rotate_one(ab):
+        a, b = ab
+        identity = (jnp.abs(b) <= 1e-12) & (jnp.abs(jnp.imag(a)) <= 1e-12) & (
+            jnp.abs(jnp.abs(jnp.real(a)) - 1.0) <= 1e-12
+        )
+
+        def identity_rotation(_):
+            return jnp.transpose(z_moment_raw, (2, 1, 0))
+
+        def ordinary_rotation(_):
+            aac = jnp.asarray(jnp.real(a * jnp.conj(a)), dtype=complex_dtype)
+            bbc = jnp.asarray(jnp.real(b * jnp.conj(b)), dtype=complex_dtype)
+            bbcaac = -bbc / aac
+            abc = -(a / jnp.conj(b))
+            ab = a / b
+
+            nlm = (
+                log_f
+                + jnp.log(aac) * l
+                + clm
+                + jnp.log(ab) * m
+                + jnp.log(abc) * mu
+                + jnp.log(bbcaac) * k
+                + binomial
+            )
+            contributions = jnp.where(nonzero_f, jnp.exp(nlm), 0.0)
+            z_nlm = jnp.zeros(is_nlm_value.shape, dtype=complex_dtype)
+            z_nlm = z_nlm.at[s_id].add(contributions)
+            return format_output(z_nlm)
+
+        return jax.lax.cond(identity, identity_rotation, ordinary_rotation, operand=None)
+
+    return jax.vmap(rotate_one)(ab_list)
 
 
 def calculate_zm_by_ab_rotation01(
@@ -23,91 +107,24 @@ def calculate_zm_by_ab_rotation01(
     k: np.ndarray,
     is_nlm_value: np.ndarray,
 ) -> List[np.ndarray]:
-    """Calculates rotated Zernike moments based on raw Zernike moments and rotation coefficients (`a`, `b`).
-    It uses pre-computed binomial and CLM (Clebsch-Gordan coefficients) caches.
+    """Rotate raw Zernike moments using Cayley--Klein ``(a, b)`` pairs.
 
-    Args:
-        z_moment_raw (np.ndarray): A 3D NumPy array of raw Zernike moments.
-        binomial_cache (np.ndarray): A cache of binomial coefficients.
-        ab_list (np.ndarray): A NumPy array where each row contains complex 'a' and 'b' rotation coefficients.
-        max_order (int): The maximum order of Zernike moments.
-        clm_cache (np.ndarray): A cache of Clebsch-Gordan coefficients.
-        s_id (np.ndarray): A NumPy array of indices for updating Zernike moments.
-        n (np.ndarray): A NumPy array of n-values for Zernike moments.
-        l (np.ndarray): A NumPy array of l-values for Zernike moments.
-        m (np.ndarray): A NumPy array of m-values for Zernike moments.
-        mu (np.ndarray): A NumPy array of mu-values for Zernike moments.
-        k (np.ndarray): A NumPy array of k-values for Zernike moments.
-        is_nlm_value (np.ndarray): A boolean NumPy array indicating valid nlm values.
-
-    Returns:
-        list: A list of NumPy arrays, where each array contains the rotated Zernike moments.
+    The public API retains the upstream list-of-NumPy-arrays return type. Internally,
+    rotations are evaluated together by a vectorized JAX kernel. Output axes retain
+    the upstream ``(m, l, n)`` layout.
     """
-    zm_rotated_list = [None] * len(ab_list)
-
-    a = ab_list[:, 0]
-    b = ab_list[:, 1]
-    a = a.flatten()
-    b = b.flatten()
-
-    aac = np.real(a * np.conj(a)).astype(np.complex128)
-    bbc = np.real(b * np.conj(b)).astype(np.complex128)
-    bbcaac = -bbc / aac
-
-    abc = -(a / np.conj(b))
-    ab = a / b
-
-    bbcaac_pow_k_list = np.log(bbcaac)[:, None] * np.arange(max_order + 1)
-    aac_pow_l_list = np.log(aac)[:, None] * np.arange(max_order + 1)
-    ab_pow_m_list = np.log(ab)[:, None] * np.arange(max_order + 1)
-    abc_pow_mu_list = np.log(abc)[:, None] * np.arange(-max_order, max_order + 1)
-
-    f_exp = np.zeros(len(s_id), dtype=np.complex128)
-    f_exp[mu >= 0] = z_moment_raw[n[mu >= 0], l[mu >= 0], mu[mu >= 0]]
-    f_exp[(mu < 0) & (mu % 2 == 0)] = np.conj(
-        z_moment_raw[
-            n[(mu < 0) & (mu % 2 == 0)], l[(mu < 0) & (mu % 2 == 0)], -mu[(mu < 0) & (mu % 2 == 0)]
-        ]
+    rotated = _calculate_zm_by_ab_rotation_jax(
+        z_moment_raw,
+        binomial_cache,
+        ab_list,
+        max_order,
+        clm_cache,
+        s_id,
+        n,
+        l,
+        m,
+        mu,
+        k,
+        is_nlm_value,
     )
-    f_exp[(mu < 0) & (mu % 2 != 0)] = -np.conj(
-        z_moment_raw[
-            n[(mu < 0) & (mu % 2 != 0)], l[(mu < 0) & (mu % 2 != 0)], -mu[(mu < 0) & (mu % 2 != 0)]
-        ]
-    )
-
-    f_exp = np.log(f_exp)
-
-    max_n = max_order + 1
-    clm = clm_cache[l * max_n + m].astype(np.complex128)
-    clm = clm.flatten()
-
-    bin = binomial_cache[l - mu, k - mu].astype(np.complex128) + binomial_cache[
-        l + mu, k - m
-    ].astype(np.complex128)
-
-    for zm_i in range(len(zm_rotated_list)):
-        al = aac_pow_l_list[zm_i, l]
-        al = al.flatten()
-
-        abpm = ab_pow_m_list[zm_i, m]
-        abpm = abpm.flatten()
-
-        amu = abc_pow_mu_list[zm_i, max_order + mu]
-        amu = amu.flatten()
-
-        bbk = bbcaac_pow_k_list[zm_i, k]
-        bbk = bbk.flatten()
-
-        nlm = f_exp + al + clm + abpm + amu + bbk + bin
-
-        z_nlm = np.zeros(is_nlm_value.shape, dtype=np.complex128)
-        np.add.at(z_nlm, s_id, np.exp(nlm))
-
-        zm = np.full((np.prod(z_moment_raw.shape),), np.nan, dtype=np.complex128)
-        zm[is_nlm_value] = z_nlm
-        zm = zm.reshape(z_moment_raw.shape)
-        zm = np.transpose(zm, (2, 1, 0))
-
-        zm_rotated_list[zm_i] = zm
-
-    return zm_rotated_list
+    return [np.asarray(item) for item in rotated]

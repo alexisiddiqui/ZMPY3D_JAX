@@ -65,7 +65,13 @@ def _compute_ab_candidates_impl(
     a = abconj_sol_exp * jnp.conj(b)
 
     # Compute validity mask but DON'T filter yet
-    is_valid = jnp.abs(bimbre_sol_real) > 1e-7
+    # Float32 eigensolves leave nominally-zero roots around 1e-7. Scale the
+    # upstream cutoff by machine precision so those roots are not duplicated.
+    root_tolerance = jnp.maximum(
+        jnp.asarray(1e-7, dtype=bimbre_sol_real.dtype),
+        jnp.asarray(100 * jnp.finfo(bimbre_sol_real.dtype).eps, dtype=bimbre_sol_real.dtype),
+    )
+    is_valid = jnp.abs(bimbre_sol_real) > root_tolerance
 
     # Return as numpy arrays for easier downstream processing
     return a, b, is_valid

@@ -132,25 +132,18 @@ class TestFillVoxelByWeightDensity:
         assert corner_xyz.shape == (3,)
 
     def test_unknown_amino_acid(self, param, residue_box_cache, sample_coords_single_atom):
-        """Test with an unknown amino acid, which should default to ASP."""
+        """Unknown residues must not be silently assigned ASP properties."""
         unknown_aa = ["XXX"]
         grid_width = 1.0
 
-        voxel3d, corner_xyz = z.fill_voxel_by_weight_density(
-            sample_coords_single_atom,
-            unknown_aa,
-            param["residue_weight_map"],
-            grid_width,
-            residue_box_cache[grid_width],
-        )
-
-        assert np.sum(voxel3d) > 0
-        assert voxel3d.ndim == 3
-        assert corner_xyz.shape == (3,)
-
-        # To be more precise, we could compare the sum of densities to that of an ASP residue
-        # This would require calculating the expected sum for ASP, which is complex.
-        # For now, just checking that density is generated is sufficient.
+        with pytest.raises(ValueError, match="Unknown residue name.*XXX"):
+            z.fill_voxel_by_weight_density(
+                sample_coords_single_atom,
+                unknown_aa,
+                param["residue_weight_map"],
+                grid_width,
+                residue_box_cache[grid_width],
+            )
 
     def test_deterministic_output(
         self, param, residue_box_cache, sample_coords_multiple_atoms, sample_aa_multiple_atoms

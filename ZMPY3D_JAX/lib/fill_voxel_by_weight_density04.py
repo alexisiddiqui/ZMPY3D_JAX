@@ -35,8 +35,19 @@ def fill_voxel_by_weight_density04(
             - voxel3d (np.ndarray): A 3D NumPy array representing the filled voxel grid.
             - corner_xyz (np.ndarray): A 1D NumPy array representing the corner coordinates of the voxel grid.
     """
+    if len(aa_name_list) != xyz.shape[0]:
+        raise ValueError("aa_name_list must contain one residue name per coordinate")
+
     if xyz.shape[0] == 0:
-        return np.zeros((0, 0, 0)), np.array([np.nan, np.nan, np.nan])
+        return jnp.zeros((0, 0, 0), dtype=_config.FLOAT_DTYPE), jnp.full(
+            (3,), jnp.nan, dtype=_config.FLOAT_DTYPE
+        )
+
+    unknown = sorted(
+        {name for name in aa_name_list if name not in residue_weight_map or name not in residue_box}
+    )
+    if unknown:
+        raise ValueError(f"Unknown residue name(s): {', '.join(unknown)}")
 
     min_bbox_point = np.min(xyz, axis=0)
     max_bbox_point = np.max(xyz, axis=0)
@@ -56,14 +67,11 @@ def fill_voxel_by_weight_density04(
 
     for i in range(num_of_atom):
         aa_name = aa_name_list[i]
-        if aa_name not in residue_weight_map:
-            aa_name = "ASP"
-
         coord = xyz[i, :]
         aa_box = residue_box[aa_name]
         box_edge = aa_box.shape[0]
 
-        coord_box_corner = np.fix(
+        coord_box_corner = np.trunc(
             np.round((coord - corner_xyz) / grid_width - box_edge / 2)
         ).astype(int)
 

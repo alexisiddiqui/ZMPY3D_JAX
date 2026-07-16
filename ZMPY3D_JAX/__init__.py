@@ -3,12 +3,16 @@
 # # used for EM, depends on MRCFILE, hence not imported
 # from .lib.Voxel3D2MRCFile                   import Voxel3D2MRCFile                      as Voxel3D2MRCFile
 # Add to __init__.py or a new config.py
-import jax
-import jax.numpy as jnp
-
-from .config import COMPLEX_DTYPE as COMPLEX_DTYPE
-from .config import FLOAT_DTYPE as FLOAT_DTYPE
 from .config import configure_for_scientific_computing as configure_for_scientific_computing
+
+
+def __getattr__(name: str):
+    """Expose configured dtypes without capturing their startup values."""
+    if name in {"FLOAT_DTYPE", "COMPLEX_DTYPE"}:
+        from . import config
+
+        return getattr(config, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 # The following renames and exports all libraries.
 # 1-file-1-function (and they have the same name), good for future optimisation.

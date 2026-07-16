@@ -73,12 +73,12 @@ class TestCalculateZMByABRotation:
     @pytest.fixture
     def zm_raw(self):
         """Create sample raw Zernike moments as JAX array."""
-        zm = np.zeros((7, 7, 13), dtype=complex)
+        rng = np.random.default_rng(2026)
+        zm = np.full((7, 7, 7), np.nan + 0j, dtype=complex)
         for n in range(7):
             for l in range(n + 1):
-                for m in range(-l, l + 1):
-                    if (n - l) % 2 == 0:
-                        zm[n, l, m + 6] = np.random.randn() + 1j * np.random.randn()
+                if (n - l) % 2 == 0:
+                    zm[n, l, : l + 1] = rng.normal(size=l + 1) + 1j * rng.normal(size=l + 1)
         return jnp.asarray(zm)
 
     @pytest.fixture
@@ -196,22 +196,10 @@ class TestCalculateZMByABRotation:
             cache_data["IsNLM_Value"],
         )
 
-        # Rotated moments should be close to original
-        # (allowing for numerical precision)
         zm_rotated = zm_list[0]
-
-        # Align axes if needed
-        if zm_rotated.shape != zm_raw.shape:
-            # Try all permutations to find a match
-            for axes in [(0, 1, 2), (0, 2, 1), (1, 0, 2), (1, 2, 0), (2, 0, 1), (2, 1, 0)]:
-                if zm_rotated.transpose(axes).shape == zm_raw.shape:
-                    zm_rotated = zm_rotated.transpose(axes)
-                    break
-
-        # Check that non-NaN values are preserved
-        mask = ~(np.isnan(zm_raw) | np.isnan(zm_rotated))
-        if np.any(mask):
-            assert np.allclose(zm_raw[mask], zm_rotated[mask], rtol=0.1, atol=1e-10)
+        np.testing.assert_allclose(
+            zm_rotated, np.transpose(zm_raw, (2, 1, 0)), rtol=1e-6, atol=1e-7, equal_nan=True
+        )
 
     def test_deterministic(self, zm_raw, ab_list, cache_data):
         """Test that function is deterministic."""

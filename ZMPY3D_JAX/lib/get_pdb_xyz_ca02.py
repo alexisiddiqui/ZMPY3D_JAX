@@ -9,6 +9,8 @@ from typing import List, Tuple
 import chex
 import jax.numpy as jnp
 
+import ZMPY3D_JAX.config as _config
+
 
 def get_pdb_xyz_ca02(file_name: str) -> Tuple[chex.Array, List[str]]:
     """Parses a PDB file to extract the XYZ coordinates and amino acid names
@@ -25,19 +27,25 @@ def get_pdb_xyz_ca02(file_name: str) -> Tuple[chex.Array, List[str]]:
     Raises:
         ValueError: If any NaN values are found in the extracted coordinates.
     """
-    with open(file_name, "r") as file:
-        lines = file.readlines()
-
-    atom_lines = [line for line in lines if line.startswith("ATOM")]
-
-    ca_lines = [line for line in atom_lines if line[13:15] == "CA"]
-
     xyz = []
     aa_names = []
-    for line in ca_lines:
-        x = float(line[30:38].strip())
-        y = float(line[38:46].strip())
-        z = float(line[46:54].strip())
+    with open(file_name, "r", encoding="utf-8") as file:
+        lines = file.readlines()
+
+    for line_number, line in enumerate(lines, start=1):
+        if not line.startswith("ATOM") or line[12:16].strip() != "CA":
+            continue
+        if len(line) < 54:
+            raise ValueError(f"Malformed CA record at line {line_number}: record is too short")
+        altloc = line[16:17]
+        if altloc not in {"", " ", "A"}:
+            continue
+        try:
+            x = float(line[30:38].strip())
+            y = float(line[38:46].strip())
+            z = float(line[46:54].strip())
+        except ValueError as exc:
+            raise ValueError(f"Malformed CA coordinates at line {line_number}") from exc
         aa_name = line[17:20].strip()
 
         xyz.append((x, y, z))
@@ -46,6 +54,6 @@ def get_pdb_xyz_ca02(file_name: str) -> Tuple[chex.Array, List[str]]:
         if any(map(math.isnan, [x, y, z])):
             raise ValueError("has nan in XYZ")
 
-    xyz_matrix = jnp.array(xyz)
+    xyz_matrix = jnp.asarray(xyz, dtype=_config.FLOAT_DTYPE).reshape((-1, 3))
 
     return xyz_matrix, aa_names

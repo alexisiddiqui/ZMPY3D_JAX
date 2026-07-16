@@ -9,7 +9,7 @@ from typing import Tuple
 import chex
 import jax.numpy as jnp
 
-from ZMPY3D_JAX.config import COMPLEX_DTYPE
+import ZMPY3D_JAX.config as _config
 
 
 def calculate_bbox_moment_2_zm05(
@@ -37,11 +37,11 @@ def calculate_bbox_moment_2_zm05(
             - z_moment_raw (chex.Array): A 3D JAX array of raw Zernike moments.
     """
 
-    g_cache_complex = jnp.asarray(g_cache_complex, dtype=COMPLEX_DTYPE)
+    g_cache_complex = jnp.asarray(g_cache_complex, dtype=_config.COMPLEX_DTYPE)
     g_cache_pqr_linear = jnp.asarray(g_cache_pqr_linear, dtype=jnp.int32)
     g_cache_complex_index = jnp.asarray(g_cache_complex_index, dtype=jnp.int32)
-    clm_cache3d = jnp.asarray(clm_cache3d, dtype=COMPLEX_DTYPE)
-    bbox_moment = jnp.asarray(bbox_moment, dtype=COMPLEX_DTYPE)
+    clm_cache3d = jnp.asarray(clm_cache3d, dtype=_config.COMPLEX_DTYPE)
+    bbox_moment = jnp.asarray(bbox_moment, dtype=_config.COMPLEX_DTYPE)
 
     max_n = max_order + 1
 
@@ -49,7 +49,7 @@ def calculate_bbox_moment_2_zm05(
 
     zm_geo = g_cache_complex * bbox_moment[g_cache_pqr_linear - 1]
 
-    zm_geo_sum = jnp.zeros(max_n * max_n * max_n, dtype=COMPLEX_DTYPE)
+    zm_geo_sum = jnp.zeros(max_n * max_n * max_n, dtype=_config.COMPLEX_DTYPE)
 
     # JAX immutable update: use .at[].add() instead of np.add.at
     zm_geo_sum = zm_geo_sum.at[g_cache_complex_index - 1].add(zm_geo)

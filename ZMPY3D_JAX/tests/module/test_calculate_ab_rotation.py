@@ -9,8 +9,15 @@ import chex
 import numpy as np
 import pytest
 
+sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 import ZMPY3D_JAX as z
+
+upstream_root = Path(__file__).resolve().parents[3] / "externals/ZMPY3D"
+sys.path.insert(0, str(upstream_root))
+from ZMPY3D.lib.calculate_ab_rotation_02_all import (
+    calculate_ab_rotation_02_all as upstream_calculate_ab_rotation_all,
+)
 
 
 class TestCalculateABRotation:
@@ -30,7 +37,7 @@ class TestCalculateABRotation:
             ]
         )
 
-        aa_names = ["CA"] * len(xyz)
+        aa_names = ["ALA"] * len(xyz)
         grid_width = 1.0
         max_order = 6
 
@@ -158,7 +165,7 @@ class TestCalculateABRotationAll:
             ]
         )
 
-        aa_names = ["CA"] * len(xyz)
+        aa_names = ["ALA"] * len(xyz)
         grid_width = 1.0
         max_order = 6
 
@@ -261,15 +268,13 @@ class TestCalculateABRotationAll:
             np.testing.assert_array_almost_equal(arr1, arr2)
 
     def test_comparison_with_single(self, real_protein_zm):
-        """Test that _all version contains results from single version."""
+        """The ind_real=2 entry must equal the single-order implementation."""
         target_order = 2
 
         ab_single = z.calculate_ab_rotation(real_protein_zm, target_order)
         ab_all = z.calculate_ab_rotation_all(real_protein_zm, target_order)
 
-        # The 'all' version should have at least as many total pairs
-        total_pairs_all = sum(arr.shape[0] for arr in ab_all)
-        assert total_pairs_all >= ab_single.shape[0]
+        np.testing.assert_allclose(np.asarray(ab_single), ab_all[0], rtol=1e-6, atol=1e-7)
 
     def test_different_orders_coverage(self, real_protein_zm):
         """Test that different orders produce different numbers of solutions."""
@@ -283,6 +288,23 @@ class TestCalculateABRotationAll:
         for order, count in counts.items():
             assert count > 0
 
+    def test_matches_upstream(self, real_protein_zm):
+        actual = z.calculate_ab_rotation_all(real_protein_zm, 2)
+        expected = upstream_calculate_ab_rotation_all(np.asarray(real_protein_zm), 2)
+        assert len(actual) == len(expected)
+
+        def sorted_rows(array):
+            array = np.asarray(array)
+            keys = np.lexsort(
+                (array[:, 1].imag, array[:, 1].real, array[:, 0].imag, array[:, 0].real)
+            )
+            return array[keys]
+
+        for actual_item, expected_item in zip(actual, expected):
+            np.testing.assert_allclose(
+                sorted_rows(actual_item), sorted_rows(expected_item), rtol=2e-4, atol=2e-5
+            )
+
     def test_calculate_ab_rotation(self):
         """Test AB rotation calculation with realistic protein structure coordinates."""
         xyz_a = np.array(
@@ -295,7 +317,7 @@ class TestCalculateABRotationAll:
             ]
         )
 
-        aa_names_a = ["CA"] * len(xyz_a)
+        aa_names_a = ["ALA"] * len(xyz_a)
         grid_width = 1.0
         max_order = 6
 

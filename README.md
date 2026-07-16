@@ -18,7 +18,7 @@ This is not yet a fully validated general-purpose Zernike moments library.
 
 Implemented or partially implemented:
 
-- PDB CA-trace parsing for protein/nucleic-acid residue records.
+- Legacy PDB CA-trace parsing for protein residue records.
 - Residue Gaussian density voxelization.
 - Bounding-box/geometric moment calculation.
 - Bounding-box moment to Zernike moment conversion.
@@ -30,9 +30,9 @@ Implemented or partially implemented:
 Known gaps:
 
 - Some rotation-normalization code still uses NumPy and Python loops.
-- `calculate_ab_rotation_all` currently needs additional JAX work and validation.
-- Input handling is structural-biology-specific; arbitrary volumes and general point clouds need a separate public API.
-- Tests need golden-value comparisons against the upstream NumPy implementation and analytic/simple-shape fixtures.
+- Rotation normalization retains a compatibility wrapper around a vectorized JAX kernel.
+- Input handling is intentionally structural-biology-specific; arbitrary point clouds are not a public API.
+- Core numerical stages have parity tests against the upstream NumPy implementation.
 - Max-order 40 cache data is not included in the repository because of size.
 
 ## Installation
@@ -79,7 +79,7 @@ Use the Python API:
 ```python
 import ZMPY3D_JAX as z
 
-z.configure_for_scientific_computing(enable_x64=True, platform="cpu")
+z.configure_for_scientific_computing(enable_x64=True)  # CPU is the current default
 
 descriptor = z.ZMPY3D_CLI_ZM(
     "6NT5.pdb",
@@ -108,10 +108,16 @@ ZMPY3D_JAX/cache_data/LogG_CLMCache_MaxOrder40.pkl
 
 ## Development
 
-Run tests:
+Run the offline correctness suite (benchmarks are excluded by default):
 
 ```bash
 pytest
+```
+
+Run performance tests separately:
+
+```bash
+pytest -m benchmark
 ```
 
 Run a focused module test:

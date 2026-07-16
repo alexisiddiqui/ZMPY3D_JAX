@@ -3,6 +3,7 @@ Tests for calculate_zm_by_ab_rotation function.
 """
 
 import pickle
+import importlib.util
 import sys
 from pathlib import Path
 
@@ -11,6 +12,18 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 import ZMPY3D_JAX as z
+
+
+def _load_upstream_rotation():
+    path = (
+        Path(__file__).resolve().parents[3]
+        / "externals/ZMPY3D/ZMPY3D/lib/calculate_zm_by_ab_rotation01.py"
+    )
+    spec = importlib.util.spec_from_file_location("upstream_zm_rotation", path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module.calculate_zm_by_ab_rotation01
 
 
 class TestCalculateZMByABRotation:
@@ -47,28 +60,26 @@ class TestCalculateZMByABRotation:
         }
 
     @pytest.fixture
-    def zm_raw(self):
-        """Create sample raw Zernike moments."""
-        zm = np.zeros((7, 7, 13), dtype=complex)
+    def zm_raw(self, cache_data):
+        """Create deterministic moments in the package's (n, l, m>=0) layout."""
+        rng = np.random.default_rng(2026)
+        zm = np.full((7, 7, 7), np.nan + 0j, dtype=complex)
         for n in range(7):
             for l in range(n + 1):
-                for m in range(-l, l + 1):
-                    if (n - l) % 2 == 0:
-                        zm[n, l, m + 6] = np.random.randn() + 1j * np.random.randn()
+                if (n - l) % 2 == 0:
+                    zm[n, l, : l + 1] = rng.normal(size=l + 1) + 1j * rng.normal(size=l + 1)
         return zm
 
     @pytest.fixture
     def ab_list(self):
         """Create sample AB rotation list."""
-        # Create a few rotation pairs
-        ab_pairs = []
-        for _ in range(3):
-            # Normalized complex pairs
-            theta = np.random.rand() * 2 * np.pi
-            a = np.cos(theta) + 1j * np.sin(theta)
-            b = np.sin(theta) - 1j * np.cos(theta)
-            ab_pairs.append([a, b])
-        return np.array(ab_pairs)
+        return np.array(
+            [
+                [np.cos(theta / 2), np.sin(theta / 2) * np.exp(1j * phase)]
+                for theta, phase in [(0.4, 0.2), (1.1, -0.7), (2.0, 1.3)]
+            ],
+            dtype=complex,
+        )
 
     def test_basic_rotation(self, zm_raw, ab_list, cache_data):
         """Test basic ZM rotation calculation."""
@@ -173,22 +184,9 @@ class TestCalculateZMByABRotation:
             cache_data["IsNLM_Value"],
         )
 
-        # Rotated moments should be close to original
-        # (allowing for numerical precision)
         zm_rotated = zm_list[0]
-
-        # Align axes if needed
-        if zm_rotated.shape != zm_raw.shape:
-            # Try all permutations to find a match
-            for axes in [(0, 1, 2), (0, 2, 1), (1, 0, 2), (1, 2, 0), (2, 0, 1), (2, 1, 0)]:
-                if zm_rotated.transpose(axes).shape == zm_raw.shape:
-                    zm_rotated = zm_rotated.transpose(axes)
-                    break
-
-        # Check that non-NaN values are preserved
-        mask = ~(np.isnan(zm_raw) | np.isnan(zm_rotated))
-        if np.any(mask):
-            assert np.allclose(zm_raw[mask], zm_rotated[mask], rtol=0.1, atol=1e-10)
+        expected = np.transpose(zm_raw, (2, 1, 0))
+        np.testing.assert_allclose(zm_rotated, expected, rtol=1e-6, atol=1e-7, equal_nan=True)
 
     def test_deterministic(self, zm_raw, ab_list, cache_data):
         """Test that function is deterministic."""
@@ -265,13 +263,14 @@ class TestCalculateZMByABRotation:
 
         # Each should be different (in general)
         for i in range(len(zm_list) - 1):
-            # Most values should differ
-            assert not np.allclose(zm_list[i], zm_list[i + 1], rtol=1e-5)
+            finite = np.isfinite(zm_list[i]) & np.isfinite(zm_list[i + 1])
+            assert np.any(finite)
+            assert not np.allclose(zm_list[i][finite], zm_list[i + 1][finite], rtol=1e-5)
 
     def test_zero_moments(self, ab_list, cache_data):
         """Test with zero Zernike moments."""
         max_order = cache_data["max_order"]
-        zero_zm = np.zeros((7, 7, 13), dtype=complex)
+        zero_zm = np.zeros((7, 7, 7), dtype=complex)
 
         zm_list = z.calculate_zm_by_ab_rotation(
             zero_zm,
@@ -325,3 +324,25 @@ class TestCalculateZMByABRotation:
         # Result should maintain certain symmetries
         zm_rotated = zm_list[0]
         assert np.iscomplexobj(zm_rotated)
+
+    def test_matches_upstream_for_nondegenerate_rotations(self, zm_raw, ab_list, cache_data):
+        args = (
+            zm_raw,
+            cache_data["BinomialCache"],
+            ab_list,
+            cache_data["max_order"],
+            cache_data["CLMCache"],
+            cache_data["s_id"],
+            cache_data["n"],
+            cache_data["l"],
+            cache_data["m"],
+            cache_data["mu"],
+            cache_data["k"],
+            cache_data["IsNLM_Value"],
+        )
+        expected = _load_upstream_rotation()(*args)
+        actual = z.calculate_zm_by_ab_rotation(*args)
+        for actual_item, expected_item in zip(actual, expected):
+            np.testing.assert_allclose(
+                actual_item, expected_item, rtol=2e-5, atol=2e-6, equal_nan=True
+            )

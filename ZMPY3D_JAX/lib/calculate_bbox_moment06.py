@@ -5,7 +5,7 @@ from typing import Dict, Tuple
 import chex
 import jax.numpy as jnp
 
-from ZMPY3D_JAX.config import FLOAT_DTYPE
+import ZMPY3D_JAX.config as _config
 
 
 def calculate_bbox_moment06(
@@ -26,8 +26,8 @@ def calculate_bbox_moment06(
             - center (jnp.ndarray): A 1D NumPy array representing the center of mass.
             - bbox_moment (jnp.ndarray): A 3D NumPy array of bounding box moments.
     """
-    voxel3d = jnp.asarray(voxel3d, dtype=FLOAT_DTYPE)
-    extend_voxel3d = jnp.zeros(jnp.array(voxel3d.shape) + 1)
+    voxel3d = jnp.asarray(voxel3d, dtype=_config.FLOAT_DTYPE)
+    extend_voxel3d = jnp.zeros(jnp.array(voxel3d.shape) + 1, dtype=_config.FLOAT_DTYPE)
 
     # JAX immutable update: use .at[] syntax instead of in-place assignment
     extend_voxel3d = extend_voxel3d.at[:-1, :-1, :-1].set(voxel3d)

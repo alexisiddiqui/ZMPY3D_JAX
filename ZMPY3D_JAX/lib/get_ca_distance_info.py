@@ -6,7 +6,7 @@ from typing import Tuple
 import chex
 import jax.numpy as jnp
 
-from ZMPY3D_JAX.config import FLOAT_DTYPE
+import ZMPY3D_JAX.config as _config
 
 
 def get_ca_distance_info(xyz: chex.Array) -> Tuple[chex.Array, chex.Array, chex.Array, chex.Array]:
@@ -14,13 +14,14 @@ def get_ca_distance_info(xyz: chex.Array) -> Tuple[chex.Array, chex.Array, chex.
     including percentiles of distances to the center, standard deviation of distances,
     skewness (s), and kurtosis (k).
     """
-    xyz = jnp.asarray(xyz, dtype=FLOAT_DTYPE)
+    xyz = jnp.asarray(xyz, dtype=_config.FLOAT_DTYPE)
 
     xyz_center = jnp.mean(xyz, axis=0)
     xyz_dist2center = jnp.sqrt(jnp.sum((xyz - xyz_center) ** 2, axis=1))
 
     percentiles_for_geom = jnp.array(
-        [10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0, 80.0, 90.0], dtype=FLOAT_DTYPE
+        [10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0, 80.0, 90.0],
+        dtype=_config.FLOAT_DTYPE,
     )
     percentile_list = jnp.percentile(xyz_dist2center, percentiles_for_geom)
     percentile_list = percentile_list.reshape(-1, 1)
@@ -28,7 +29,7 @@ def get_ca_distance_info(xyz: chex.Array) -> Tuple[chex.Array, chex.Array, chex.
     std_xyz_dist2center = jnp.std(xyz_dist2center, ddof=1)
 
     n = xyz_dist2center.shape[0]
-    n_f = jnp.asarray(n, dtype=FLOAT_DTYPE)
+    n_f = jnp.asarray(n, dtype=_config.FLOAT_DTYPE)
     mean_distance = jnp.mean(xyz_dist2center)
 
     # Avoid division by zero in case std is zero

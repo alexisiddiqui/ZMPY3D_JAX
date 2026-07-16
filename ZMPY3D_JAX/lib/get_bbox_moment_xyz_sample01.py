@@ -7,7 +7,7 @@ from typing import Dict, Tuple
 import chex
 import jax.numpy as jnp
 
-from ZMPY3D_JAX.config import FLOAT_DTYPE
+import ZMPY3D_JAX.config as _config
 
 
 def get_bbox_moment_xyz_sample01(
@@ -27,14 +27,14 @@ def get_bbox_moment_xyz_sample01(
         dict: A dictionary containing 'X_sample', 'Y_sample', and 'Z_sample' NumPy arrays
               of the normalized sample coordinates.
     """
-    center = jnp.asarray(center, dtype=FLOAT_DTYPE)
-    radius = jnp.asarray(radius, dtype=FLOAT_DTYPE)
+    center = jnp.asarray(center, dtype=_config.FLOAT_DTYPE)
+    radius = jnp.asarray(radius, dtype=_config.FLOAT_DTYPE)
 
     x_edge, y_edge, z_edge = dimension_bbox_scaled
 
-    x_sample = (jnp.arange(x_edge + 1, dtype=FLOAT_DTYPE) - center[0]) / radius
-    y_sample = (jnp.arange(y_edge + 1, dtype=FLOAT_DTYPE) - center[1]) / radius
-    z_sample = (jnp.arange(z_edge + 1, dtype=FLOAT_DTYPE) - center[2]) / radius
+    x_sample = (jnp.arange(x_edge + 1, dtype=_config.FLOAT_DTYPE) - center[0]) / radius
+    y_sample = (jnp.arange(y_edge + 1, dtype=_config.FLOAT_DTYPE) - center[1]) / radius
+    z_sample = (jnp.arange(z_edge + 1, dtype=_config.FLOAT_DTYPE) - center[2]) / radius
 
     xyz_sample_struct = {"X_sample": x_sample, "Y_sample": y_sample, "Z_sample": z_sample}
 

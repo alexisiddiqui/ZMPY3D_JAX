@@ -5,14 +5,8 @@
 import chex
 import jax.numpy as jnp
 
-from ZMPY3D_JAX.config import COMPLEX_DTYPE
-
-# create a type alias for COMPLEX_DTYPE
-Complex = COMPLEX_DTYPE
-
-
 def get_transform_matrix_from_ab_list02(
-    a: Complex, b: Complex, center_scaled: chex.Array
+    a: complex, b: complex, center_scaled: chex.Array
 ) -> chex.Array:
     """Constructs a 4x4 transformation matrix (including rotation and translation)
     from complex 'a' and 'b' coefficients and a 'center_scaled' vector.
