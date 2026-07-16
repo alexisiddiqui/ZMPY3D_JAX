@@ -15,7 +15,7 @@ import numpy as np
 
 from ZMPY3D_JAX import config as _config
 
-from .calculate_ab_candidates_jax import compute_ab_candidates_jax
+from .calculate_ab_candidates_jax import _compute_ab_candidates_impl
 from .eigen_root import eigen_root
 
 
@@ -36,7 +36,7 @@ def calculate_ab_rotation_02_all_jax(
 
     # Vmap over ind_real dimension
     def compute_for_order(ind_real):
-        return compute_ab_candidates_jax(z_moment_raw, abconj_sol, ind_real)
+        return _compute_ab_candidates_impl(z_moment_raw, abconj_sol, ind_real)
 
     a_all, b_all, is_valid_all = jax.vmap(compute_for_order)(ind_real_all)
 

@@ -8,8 +8,7 @@ from ZMPY3D_JAX import config as _config
 from ZMPY3D_JAX.lib.eigen_root import batched_eigen_root
 
 
-@partial(jax.jit, static_argnames=("ind_real",))
-def compute_ab_candidates_jax(
+def _compute_ab_candidates_impl(
     z_moment_raw: chex.Array, abconj_sol: chex.Array, ind_real: int
 ) -> tuple[chex.Array, chex.Array, chex.Array]:
     """
@@ -70,3 +69,10 @@ def compute_ab_candidates_jax(
 
     # Return as numpy arrays for easier downstream processing
     return a, b, is_valid
+
+
+@partial(jax.jit, static_argnames=("ind_real",))
+def compute_ab_candidates_jax(
+    z_moment_raw: chex.Array, abconj_sol: chex.Array, ind_real: int
+) -> tuple[chex.Array, chex.Array, chex.Array]:
+    return _compute_ab_candidates_impl(z_moment_raw, abconj_sol, ind_real)
