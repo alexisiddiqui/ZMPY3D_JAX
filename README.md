@@ -120,6 +120,37 @@ Run performance tests separately:
 pytest -m benchmark
 ```
 
+The default suite includes fast, end-to-end numerical regression cases against the upstream
+NumPy implementation. Run them directly with:
+
+```bash
+pytest ZMPY3D_JAX/tests/integration/test_upstream_regression.py -m "not slow"
+```
+
+Run the slower order-20 cases separately:
+
+```bash
+pytest ZMPY3D_JAX/tests/integration/test_upstream_regression.py -m slow
+```
+
+Run the informational CPU performance comparison with independent JAX and upstream pipelines:
+
+```bash
+pytest -m benchmark ZMPY3D_JAX/tests/benchmark/test_benchmark_regression_upstream.py
+ZMPY3D_REGRESSION_REPEATS=5 ZMPY3D_REGRESSION_SAMPLES=9 \
+  pytest -m benchmark ZMPY3D_JAX/tests/benchmark/test_benchmark_regression_upstream.py
+```
+
+The benchmark enables CPU/x64 explicitly, reports cold JAX and warmed timing distributions, and
+writes timestamped JSON results under:
+
+```text
+ZMPY3D_JAX/tests/benchmark/_simple_time_benchmark/upstream_regression_benchmark_*.json
+```
+
+Set `ZMPY3D_BENCHMARK_OUTPUT` to write results to another directory. Timing is deliberately
+informational and does not fail on a hardware-dependent speed threshold.
+
 Run a focused module test:
 
 ```bash

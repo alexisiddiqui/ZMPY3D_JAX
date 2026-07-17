@@ -137,3 +137,5 @@ dmypy.json
 ZMPY3D_JAX/cache_data/LogG_CLMCache_MaxOrder40.pkl
 
 _*/
+
+*__pycache__/
