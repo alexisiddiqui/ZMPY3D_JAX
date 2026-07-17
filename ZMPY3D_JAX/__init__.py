@@ -34,7 +34,10 @@ from .lib.calculate_molecular_radius03 import (
     calculate_molecular_radius03 as calculate_molecular_radius,
 )
 from .lib.calculate_zm_by_ab_rotation01 import (
+    ZMRotationCache as ZMRotationCache,
+    calculate_zm_by_ab_rotation_batch as calculate_zm_by_ab_rotation_batch,
     calculate_zm_by_ab_rotation01 as calculate_zm_by_ab_rotation,
+    prepare_zm_rotation_cache as prepare_zm_rotation_cache,
 )
 from .lib.eigen_root import eigen_root as eigen_root
 from .lib.fill_voxel_by_weight_density04 import (

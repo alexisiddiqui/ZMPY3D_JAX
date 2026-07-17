@@ -346,3 +346,59 @@ class TestCalculateZMByABRotation:
             np.testing.assert_allclose(
                 actual_item, expected_item, rtol=2e-5, atol=2e-6, equal_nan=True
             )
+
+    def test_prepared_batch_matches_legacy_and_mean_invariant(
+        self, zm_raw, ab_list, cache_data
+    ):
+        cache = z.prepare_zm_rotation_cache(
+            cache_data["BinomialCache"],
+            cache_data["max_order"],
+            cache_data["CLMCache"],
+            cache_data["s_id"],
+            cache_data["n"],
+            cache_data["l"],
+            cache_data["m"],
+            cache_data["mu"],
+            cache_data["k"],
+            cache_data["IsNLM_Value"],
+        )
+        batch = z.calculate_zm_by_ab_rotation_batch(zm_raw, ab_list, cache)
+        legacy = z.calculate_zm_by_ab_rotation(
+            zm_raw,
+            cache_data["BinomialCache"],
+            ab_list,
+            cache_data["max_order"],
+            cache_data["CLMCache"],
+            cache_data["s_id"],
+            cache_data["n"],
+            cache_data["l"],
+            cache_data["m"],
+            cache_data["mu"],
+            cache_data["k"],
+            cache_data["IsNLM_Value"],
+        )
+
+        assert batch.shape == (len(ab_list), 7, 7, 7)
+        np.testing.assert_allclose(np.asarray(batch), np.stack(legacy), equal_nan=True)
+        batch_mean, batch_std = z.get_mean_invariant(batch)
+        list_mean, list_std = z.get_mean_invariant(legacy)
+        np.testing.assert_allclose(batch_mean, list_mean, equal_nan=True)
+        np.testing.assert_allclose(batch_std, list_std, equal_nan=True)
+
+    def test_prepared_batch_supports_empty_rotation_list(self, zm_raw, cache_data):
+        cache = z.prepare_zm_rotation_cache(
+            cache_data["BinomialCache"],
+            cache_data["max_order"],
+            cache_data["CLMCache"],
+            cache_data["s_id"],
+            cache_data["n"],
+            cache_data["l"],
+            cache_data["m"],
+            cache_data["mu"],
+            cache_data["k"],
+            cache_data["IsNLM_Value"],
+        )
+        batch = z.calculate_zm_by_ab_rotation_batch(
+            zm_raw, np.empty((0, 2), dtype=complex), cache
+        )
+        assert batch.shape == (0, 7, 7, 7)

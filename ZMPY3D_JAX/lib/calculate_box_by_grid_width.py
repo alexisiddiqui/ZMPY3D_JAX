@@ -6,14 +6,12 @@
 
 from typing import Any, Dict, List
 
-import chex
-import jax.numpy as jnp
 import numpy as np
 
 import ZMPY3D_JAX.config as _config
 
 
-def calculate_box_by_grid_width(param: Dict[str, Any], grid_width: float) -> List[chex.Array]:
+def calculate_box_by_grid_width(param: Dict[str, Any], grid_width: float) -> List[np.ndarray]:
     """Generates 3D Gaussian density boxes for each amino acid residue at a specified grid width.
     These boxes represent the spatial density distribution of each residue.
 
@@ -60,9 +58,11 @@ def calculate_box_by_grid_width(param: Dict[str, Any], grid_width: float) -> Lis
             * density_multiplier
         )
 
-        residue_unit_box = np.zeros((box_edge, box_edge, box_edge))
+        residue_unit_box = np.zeros(
+            (box_edge, box_edge, box_edge), dtype=_config.FLOAT_DTYPE
+        )
         residue_unit_box[is_within_radius] = gaus_val[is_within_radius]
 
-        aa_box_list.append(jnp.asarray(residue_unit_box, dtype=_config.FLOAT_DTYPE))
+        aa_box_list.append(residue_unit_box)
 
     return aa_box_list

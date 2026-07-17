@@ -133,74 +133,22 @@ def ZMPY3D_CLI_ShapeScore(
 
         TargetOrder2NormRotate = 2
         ABList_2 = z.calculate_ab_rotation(ZMoment_raw, TargetOrder2NormRotate)
-        ZMList_2 = z.calculate_zm_by_ab_rotation(
-            ZMoment_raw,
-            BinomialCache,
-            ABList_2,
-            MaxOrder,
-            CLMCache,
-            s_id,
-            n,
-            l,
-            m,
-            mu,
-            k,
-            IsNLM_Value,
-        )
+        ZMList_2 = z.calculate_zm_by_ab_rotation_batch(ZMoment_raw, ABList_2, RotationCache)
         [ZM_2, _] = z.get_mean_invariant(ZMList_2)
 
         TargetOrder2NormRotate = 3
         ABList_3 = z.calculate_ab_rotation(ZMoment_raw, TargetOrder2NormRotate)
-        ZMList_3 = z.calculate_zm_by_ab_rotation(
-            ZMoment_raw,
-            BinomialCache,
-            ABList_3,
-            MaxOrder,
-            CLMCache,
-            s_id,
-            n,
-            l,
-            m,
-            mu,
-            k,
-            IsNLM_Value,
-        )
+        ZMList_3 = z.calculate_zm_by_ab_rotation_batch(ZMoment_raw, ABList_3, RotationCache)
         [ZM_3, _] = z.get_mean_invariant(ZMList_3)
 
         TargetOrder2NormRotate = 4
         ABList_4 = z.calculate_ab_rotation(ZMoment_raw, TargetOrder2NormRotate)
-        ZMList_4 = z.calculate_zm_by_ab_rotation(
-            ZMoment_raw,
-            BinomialCache,
-            ABList_4,
-            MaxOrder,
-            CLMCache,
-            s_id,
-            n,
-            l,
-            m,
-            mu,
-            k,
-            IsNLM_Value,
-        )
+        ZMList_4 = z.calculate_zm_by_ab_rotation_batch(ZMoment_raw, ABList_4, RotationCache)
         [ZM_4, _] = z.get_mean_invariant(ZMList_4)
 
         TargetOrder2NormRotate = 5
         ABList_5 = z.calculate_ab_rotation(ZMoment_raw, TargetOrder2NormRotate)
-        ZMList_5 = z.calculate_zm_by_ab_rotation(
-            ZMoment_raw,
-            BinomialCache,
-            ABList_5,
-            MaxOrder,
-            CLMCache,
-            s_id,
-            n,
-            l,
-            m,
-            mu,
-            k,
-            IsNLM_Value,
-        )
+        ZMList_5 = z.calculate_zm_by_ab_rotation_batch(ZMoment_raw, ABList_5, RotationCache)
         [ZM_5, _] = z.get_mean_invariant(ZMList_5)
 
         MomentInvariant = np.concatenate(
@@ -259,6 +207,9 @@ def ZMPY3D_CLI_ShapeScore(
     mu = np.squeeze(RotationIndex["mu"][0, 0])
     k = np.squeeze(RotationIndex["k"][0, 0])
     IsNLM_Value = np.squeeze(RotationIndex["IsNLM_Value"][0, 0]) - 1
+    RotationCache = z.prepare_zm_rotation_cache(
+        BinomialCache, MaxOrder, CLMCache, s_id, n, l, m, mu, k, IsNLM_Value
+    )
 
     MaxN = MaxOrder + 1
 

@@ -4,7 +4,9 @@ from typing import Any, Dict
 
 import numpy as np
 
-from .calculate_box_by_grid_width import *
+import ZMPY3D_JAX.config as _config
+
+from .calculate_box_by_grid_width import calculate_box_by_grid_width
 
 
 def get_residue_gaussian_density_cache02(
@@ -45,7 +47,8 @@ def get_residue_gaussian_density_cache02(
         ]
 
         adjusted_temp_aa_box_list = [
-            box * scalar for box, scalar in zip(temp_aa_box_list, density_scalar)
+            np.asarray(box * scalar, dtype=_config.FLOAT_DTYPE)
+            for box, scalar in zip(temp_aa_box_list, density_scalar)
         ]
 
         aa_box_map_list.append(dict(zip(residue_name, adjusted_temp_aa_box_list)))

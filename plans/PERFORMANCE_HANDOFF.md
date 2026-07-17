@@ -37,7 +37,7 @@ hardware-dependent failure threshold.
 Latest verification:
 
 ```text
-Default suite:             128 passed, 68 deselected
+Default suite:             131 passed, 68 deselected
 Order-20 regression tier:  2 passed
 CPU timing benchmark:      3 passed
 ```
@@ -45,24 +45,29 @@ CPU timing benchmark:      3 passed
 Latest measurement on a 12th Gen Intel Core i7-12700KF:
 
 ```text
-Shared input/cache setup:   31.34 ms
-JAX setup:                   1.13 s
-Upstream setup:             76.51 ms
-JAX first execution:         4.95 s
-Upstream first execution:   16.50 ms
-JAX warmed median:          88.94 ms
-Upstream warmed median:     17.33 ms
-JAX/upstream time ratio:     5.13
+Shared input/cache setup:   12.25 ms
+JAX setup:                  80.58 ms
+JAX rotation-cache setup:   11.94 ms
+Upstream setup:             75.45 ms
+JAX first execution:         3.09 s
+Upstream first execution:   21.37 ms
+JAX warmed median:          36.07 ms
+Upstream warmed median:     23.55 ms
+JAX/upstream time ratio:     1.53
 ```
 
-Setup and first execution are now measured independently. Warmed JAX is about 5.13 times slower
-than warmed upstream NumPy for this single-protein CPU workload. The old result near `1.00x` was
-invalid because both timed wrappers executed the same combined JAX-plus-upstream helper.
+Latest structured result:
+`upstream_regression_benchmark_20260717T111623_287904Z.json`.
+
+Setup and first execution are measured independently. Warmed JAX is about 1.53 times slower than
+warmed upstream NumPy for this single-protein CPU workload. Rotation-cache materialization is an
+explicit one-time setup cost and is excluded from warmed stage timing.
 
 ## Completed Performance Diagnosis
 
-The benchmark now emits schema-v2 JSON with separate shared setup, implementation setup, first
-execution, warmed end-to-end latency, and synchronized stage profiles. Ratio fields are explicit:
+The benchmark now emits schema-v3 JSON with separate shared setup, implementation setup, JAX
+rotation-cache setup, first execution, warmed end-to-end latency, and synchronized stage profiles.
+Ratio fields are explicit:
 `jax_over_upstream_time_ratio` and `upstream_over_jax_time_ratio`.
 
 The synchronized stage profile ranks bottlenecks by positive median excess time. It is diagnostic;
@@ -72,34 +77,109 @@ Latest ranking:
 
 | Rank | Stage | JAX median | Upstream median | Positive-gap contribution |
 | ---: | --- | ---: | ---: | ---: |
-| 1 | AB candidates | 36.47 ms | 0.317 ms | 50.13% |
-| 2 | ZM rotation | 16.26 ms | 0.464 ms | 21.91% |
-| 3 | Voxelization | 18.14 ms | 7.49 ms | 14.77% |
-| 4 | Radius and sphere | 9.75 ms | 4.99 ms | 6.60% |
+| 1 | Radius and sphere | 12.10 ms | 6.07 ms | 62.54% |
+| 2 | Bbox to ZM | 1.41 ms | 0.086 ms | 13.75% |
+| 3 | AB candidates | 1.41 ms | 0.316 ms | 11.40% |
+| 4 | Descriptor | 0.630 ms | 0.035 ms | 6.19% |
 
-AB candidate generation is the next optimization target: it is approximately 115 times slower
-than upstream and accounts for half of the measured positive CPU gap.
+AB candidate generation now measures 1.41 ms versus 0.316 ms upstream, ranks third, and accounts
+for 11.40% of the remaining positive CPU gap.
+
+### Completed AB root optimization
+
+Internal profiling showed that the unjitted initial polynomial root solve consumed approximately
+33.0 ms of the former 35.6 ms public AB call. The candidate kernel itself took about 0.021 ms and
+dynamic filtering about 0.66 ms.
+
+`eigen_root` now uses a dtype-aware, fixed-shape jitted companion-matrix kernel. Batched root
+solving uses that kernel directly, so both `calculate_ab_rotation` and
+`calculate_ab_rotation_all` benefit without changing their public return contracts.
+
+Results:
+
+- AB stage: 36.47 ms to 1.38 ms, a 96.2% reduction.
+- Warm full pipeline: 88.94 ms to 57.34 ms, a 35.5% reduction.
+- JAX/upstream full-pipeline ratio: 5.13 to 3.66.
+- The agreed 5 ms stop target was satisfied, so whole-AB kernel fusion was not added.
+
+### Completed rotation cache and batch optimization
+
+The vectorized ZM rotation kernel is now jitted, and its binomial, CLM, and index caches are
+materialized once as an immutable JAX cache. Internal descriptor and superposition workflows use a
+fixed JAX rotation batch; the original list-of-NumPy-arrays function remains a compatibility
+wrapper.
+
+A 72-rotation 6NT5 microprofile measured 10.61 ms when the compiled kernel received NumPy cache
+arguments on every call and 0.57 ms when it received prepared JAX arrays. In the full benchmark's
+normalization-order-5 stage, warmed rotation now measures 0.312 ms versus 0.355 ms upstream.
+
+Results:
+
+- ZM rotation: 16.51 ms to 0.312 ms, a 98.1% reduction.
+- Warm full pipeline: 57.34 ms to 46.58 ms, an 18.8% reduction.
+- JAX/upstream full-pipeline ratio: 3.66 to 1.90.
+- Rotation now ranks eighth with no positive contribution to the remaining CPU gap.
+
+### Completed NumPy-native voxel preprocessing
+
+PDB parsing and Gaussian residue-density cache construction now remain NumPy-native. The host
+voxelizer normalizes legacy JAX inputs once at entry and converts only the completed voxel and
+corner to JAX for the bbox pipeline. This removes per-atom device-to-host conversions without
+introducing a variable-shape JAX scatter kernel.
+
+The 584-residue 6NT5 microprofile fell from 60.25 ms with JAX coordinates and boxes, or 15.87 ms
+with NumPy coordinates and JAX boxes, to approximately 3.6 ms with host-owned preprocessing at
+default precision. The synchronized x64 stage measures 5.84 ms versus 7.33 ms upstream.
+
+Results:
+
+- Voxelization: 19.40 ms to 5.84 ms, a 69.9% reduction.
+- JAX setup: 1.12 s to 80.58 ms, a 92.8% reduction.
+- Warm full pipeline: 46.58 ms to 36.07 ms, a 22.6% reduction.
+- JAX/upstream full-pipeline ratio: 1.90 to 1.53.
+- Voxelization now ranks eighth with no positive contribution to the remaining CPU gap.
+
+## JAX/NumPy Boundary Audit
+
+Legacy NumPy return types should remain compatibility wrappers, not the internal computational
+representation. JAX-native kernels should retain fixed-shape arrays plus validity masks until an
+explicit public or I/O boundary requires conversion.
+
+Resolved boundaries:
+
+1. Internal rotation consumers retain a batched JAX result through invariant calculation or until
+   the superposition host boundary; only the legacy public wrapper returns a NumPy list.
+2. Rotation's large binomial/CLM caches and index arrays are prepared once and reused.
+3. PDB coordinates and residue-density boxes remain NumPy-native through voxel accumulation; the
+   completed voxel and corner cross to JAX once.
+
+Remaining unnecessary boundaries:
+
+1. `calculate_ab_rotation_all` transfers candidates and masks to NumPy; superposition workflows
+   immediately stack them before passing the batch into JAX rotation code.
+2. Bbox-to-Zernike conversion rematerializes its static G/CLM caches as JAX arrays on each call.
+3. The regression helper converts scaled JAX moments to NumPy before invoking the JAX descriptor,
+   slightly inflating the descriptor-stage measurement.
+4. CLI descriptor assembly uses NumPy filtering and concatenation on JAX results. This conversion
+   should occur once, after JAX-side assembly, at the public output boundary.
+5. Superposition constructs transformation matrices in JAX and then transfers them into
+   `np.linalg.solve`; this small path should consistently use one array library.
+
+The highest-value remaining stage is radius and sphere construction.
 
 ## Recommended Next Work
 
-### 1. Optimize AB candidate generation
+### 1. Profile and optimize radius and sphere construction
 
-Profile `calculate_ab_rotation` internally, separating polynomial/root solving, candidate
-construction, validity filtering, and host conversion. Examine it for:
+Separate the cost of positive-voxel selection, coordinate construction, radius reductions, and
+sphere sample construction. Investigate compiling the fixed-shape reductions and replacing dynamic
+boolean gathers if they remain the dominant cost. Preserve variable voxel dimensions and current
+radius parity.
 
-- Repeated NumPy-to-JAX or JAX-to-NumPy conversions.
-- Python loops surrounding small dispatched JAX operations.
-- Missing or overly narrow JIT boundaries.
-- Recomputed constants or indices that can be cached.
-- Opportunities to keep intermediate arrays on the JAX device through adjacent stages.
+### 2. Prepare bbox-to-ZM static caches once
 
-After each change, rerun the upstream regression suite before accepting the performance result.
-
-### 2. Reassess rotation after AB optimization
-
-Rerun the full stage profile after improving AB generation. If ZM rotation remains the largest
-positive contributor, create a separate optimization plan for its compatibility wrapper and device
-transfer behavior.
+Bbox-to-ZM is the second-largest positive gap and rematerializes its G/CLM arrays on each pipeline
+call. Apply the prepared-cache pattern used by rotation before changing its numerical kernel.
 
 ### 3. Add a throughput profile
 

@@ -1,4 +1,5 @@
-from typing import List
+from functools import partial
+from typing import List, NamedTuple
 
 import chex
 import jax
@@ -8,6 +9,49 @@ import numpy as np
 import ZMPY3D_JAX.config as _config
 
 
+class ZMRotationCache(NamedTuple):
+    """Device-resident constants used by the Zernike-moment rotation kernel."""
+
+    binomial: chex.Array
+    max_order: int
+    clm: chex.Array
+    s_id: chex.Array
+    n: chex.Array
+    l: chex.Array
+    m: chex.Array
+    mu: chex.Array
+    k: chex.Array
+    is_nlm_value: chex.Array
+
+
+def prepare_zm_rotation_cache(
+    binomial_cache: chex.Array,
+    max_order: int,
+    clm_cache: chex.Array,
+    s_id: chex.Array,
+    n: chex.Array,
+    l: chex.Array,
+    m: chex.Array,
+    mu: chex.Array,
+    k: chex.Array,
+    is_nlm_value: chex.Array,
+) -> ZMRotationCache:
+    """Materialize static rotation data once using the configured JAX dtypes."""
+    return ZMRotationCache(
+        binomial=jnp.asarray(binomial_cache, dtype=_config.FLOAT_DTYPE),
+        max_order=int(max_order),
+        clm=jnp.asarray(clm_cache, dtype=_config.FLOAT_DTYPE),
+        s_id=jnp.asarray(s_id, dtype=jnp.int32),
+        n=jnp.asarray(n, dtype=jnp.int32),
+        l=jnp.asarray(l, dtype=jnp.int32),
+        m=jnp.asarray(m, dtype=jnp.int32),
+        mu=jnp.asarray(mu, dtype=jnp.int32),
+        k=jnp.asarray(k, dtype=jnp.int32),
+        is_nlm_value=jnp.asarray(is_nlm_value, dtype=jnp.int32),
+    )
+
+
+@partial(jax.jit, static_argnums=(3,))
 def _calculate_zm_by_ab_rotation_jax(
     z_moment_raw: chex.Array,
     binomial_cache: chex.Array,
@@ -93,6 +137,28 @@ def _calculate_zm_by_ab_rotation_jax(
     return jax.vmap(rotate_one)(ab_list)
 
 
+def calculate_zm_by_ab_rotation_batch(
+    z_moment_raw: chex.Array,
+    ab_list: chex.Array,
+    cache: ZMRotationCache,
+) -> chex.Array:
+    """Rotate all Cayley--Klein pairs into a JAX batch of shape ``(r, m, l, n)``."""
+    return _calculate_zm_by_ab_rotation_jax(
+        jnp.asarray(z_moment_raw, dtype=_config.COMPLEX_DTYPE),
+        cache.binomial,
+        jnp.asarray(ab_list, dtype=_config.COMPLEX_DTYPE).reshape((-1, 2)),
+        cache.max_order,
+        cache.clm,
+        cache.s_id,
+        cache.n,
+        cache.l,
+        cache.m,
+        cache.mu,
+        cache.k,
+        cache.is_nlm_value,
+    )
+
+
 def calculate_zm_by_ab_rotation01(
     z_moment_raw: np.ndarray,
     binomial_cache: np.ndarray,
@@ -113,10 +179,8 @@ def calculate_zm_by_ab_rotation01(
     rotations are evaluated together by a vectorized JAX kernel. Output axes retain
     the upstream ``(m, l, n)`` layout.
     """
-    rotated = _calculate_zm_by_ab_rotation_jax(
-        z_moment_raw,
+    cache = prepare_zm_rotation_cache(
         binomial_cache,
-        ab_list,
         max_order,
         clm_cache,
         s_id,
@@ -127,4 +191,5 @@ def calculate_zm_by_ab_rotation01(
         k,
         is_nlm_value,
     )
+    rotated = calculate_zm_by_ab_rotation_batch(z_moment_raw, ab_list, cache)
     return [np.asarray(item) for item in rotated]

@@ -114,6 +114,9 @@ def ZMPY3D_CLI_ZM(
     mu = np.squeeze(RotationIndex["mu"][0, 0])
     k = np.squeeze(RotationIndex["k"][0, 0])
     IsNLM_Value = np.squeeze(RotationIndex["IsNLM_Value"][0, 0]) - 1
+    RotationCache = z.prepare_zm_rotation_cache(
+        BinomialCache, MaxOrder, CLMCache, s_id, n, l, m, mu, k, IsNLM_Value
+    )
 
     ResidueBox = z.get_residue_gaussian_density_cache(Param)
 
@@ -162,20 +165,7 @@ def ZMPY3D_CLI_ZM(
     if Mode == 0:
         for TargetOrder2NormRotate in range(2, MaxTargetOrder2NormRotate + 1):
             ABList = z.calculate_ab_rotation(ZMoment_raw, TargetOrder2NormRotate)
-            ZM = z.calculate_zm_by_ab_rotation(
-                ZMoment_raw,
-                BinomialCache,
-                ABList,
-                MaxOrder,
-                CLMCache,
-                s_id,
-                n,
-                l,
-                m,
-                mu,
-                k,
-                IsNLM_Value,
-            )
+            ZM = z.calculate_zm_by_ab_rotation_batch(ZMoment_raw, ABList, RotationCache)
             ZM_mean, _ = z.get_mean_invariant(ZM)
             ZMList.append(ZM_mean)
     elif Mode == 1:
@@ -187,20 +177,7 @@ def ZMPY3D_CLI_ZM(
 
         for TargetOrder2NormRotate in range(2, MaxTargetOrder2NormRotate + 1):
             ABList = z.calculate_ab_rotation(ZMoment_raw, TargetOrder2NormRotate)
-            ZM = z.calculate_zm_by_ab_rotation(
-                ZMoment_raw,
-                BinomialCache,
-                ABList,
-                MaxOrder,
-                CLMCache,
-                s_id,
-                n,
-                l,
-                m,
-                mu,
-                k,
-                IsNLM_Value,
-            )
+            ZM = z.calculate_zm_by_ab_rotation_batch(ZMoment_raw, ABList, RotationCache)
             ZM_mean, _ = z.get_mean_invariant(ZM)
             ZMList.append(ZM_mean)
 

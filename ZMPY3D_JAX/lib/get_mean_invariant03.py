@@ -4,22 +4,26 @@
 from typing import Sequence, Tuple
 
 import chex
+import jax
 import jax.numpy as jnp
 
 import ZMPY3D_JAX.config as _config
 
 
-def get_mean_invariant03(zm_list: Sequence[chex.Array]) -> Tuple[chex.Array, chex.Array]:
-    """Calculates the mean and standard deviation of a list of Zernike moment arrays,
-    typically representing different rotations of a molecule.
-    """
-    # ensure complex JAX arrays, stack along a new axis 3
-    stacked = jnp.stack(
-        [jnp.asarray(z, dtype=_config.COMPLEX_DTYPE) for z in zm_list], axis=3
-    )
-    all_zm = jnp.abs(stacked)
+@jax.jit
+def _get_mean_invariant_batch(zm_batch: chex.Array) -> Tuple[chex.Array, chex.Array]:
+    all_zm = jnp.abs(zm_batch)
+    return jnp.mean(all_zm, axis=0), jnp.std(all_zm, axis=0, ddof=1)
 
-    zm_mean = jnp.mean(all_zm, axis=3)
-    zm_std = jnp.std(all_zm, axis=3, ddof=1)
 
-    return zm_mean, zm_std
+def get_mean_invariant03(
+    zm_list: Sequence[chex.Array] | chex.Array,
+) -> Tuple[chex.Array, chex.Array]:
+    """Calculate rotation means/stds from a legacy list or ``(r, m, l, n)`` batch."""
+    if hasattr(zm_list, "ndim") and zm_list.ndim == 4:
+        batch = jnp.asarray(zm_list, dtype=_config.COMPLEX_DTYPE)
+    else:
+        batch = jnp.stack(
+            [jnp.asarray(z, dtype=_config.COMPLEX_DTYPE) for z in zm_list], axis=0
+        )
+    return _get_mean_invariant_batch(batch)

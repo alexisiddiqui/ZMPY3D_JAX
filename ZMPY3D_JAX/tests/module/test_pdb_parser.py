@@ -20,6 +20,8 @@ def test_parser_selects_ca_and_primary_altloc(tmp_path):
         encoding="utf-8",
     )
     xyz, residues = z.get_pdb_xyz_ca(str(pdb))
+    assert isinstance(xyz, np.ndarray)
+    assert xyz.dtype == np.dtype(z.FLOAT_DTYPE)
     np.testing.assert_allclose(xyz, [[1, 2, 3]])
     assert residues == ["ALA"]
 
@@ -28,6 +30,7 @@ def test_empty_parser_result_has_coordinate_shape(tmp_path):
     pdb = tmp_path / "empty.pdb"
     pdb.write_text("END\n", encoding="utf-8")
     xyz, residues = z.get_pdb_xyz_ca(str(pdb))
+    assert isinstance(xyz, np.ndarray)
     assert xyz.shape == (0, 3)
     assert residues == []
 

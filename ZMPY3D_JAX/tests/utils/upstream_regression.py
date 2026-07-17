@@ -46,6 +46,7 @@ class PipelineContext:
     params: dict[str, Any]
     residue_boxes: dict[float, Any]
     functions: dict[str, Callable[..., Any]]
+    rotation_cache: Any | None = None
 
 
 def block_tree(value: Any) -> None:
@@ -228,6 +229,7 @@ def prepare_pipeline_context(
     *,
     cache: dict[str, Any] | None = None,
     setup: tuple[dict[str, Any], dict[float, Any]] | None = None,
+    rotation_cache: Any | None = None,
 ) -> PipelineContext:
     """Resolve functions and setup before a pipeline is timed or executed."""
     if implementation not in {"jax", "upstream"}:
@@ -246,7 +248,10 @@ def prepare_pipeline_context(
             "ab": z.calculate_ab_rotation,
             "ab_all": z.calculate_ab_rotation_all,
             "rotate": z.calculate_zm_by_ab_rotation,
+            "rotate_batch": z.calculate_zm_by_ab_rotation_batch,
         }
+        if rotation_cache is None:
+            rotation_cache = prepare_jax_rotation_cache(case, cache)
     else:
         params, residue_boxes = upstream_setup() if setup is None else setup
         upstream = upstream_functions()
@@ -261,6 +266,7 @@ def prepare_pipeline_context(
             "ab_all",
             "rotate",
         )}
+        rotation_cache = None
 
     return PipelineContext(
         implementation=implementation,
@@ -269,6 +275,25 @@ def prepare_pipeline_context(
         params=params,
         residue_boxes=residue_boxes,
         functions=functions,
+        rotation_cache=rotation_cache,
+    )
+
+
+def prepare_jax_rotation_cache(
+    case: RegressionInput, cache: dict[str, Any]
+) -> z.ZMRotationCache:
+    """Materialize the JAX-only rotation constants for a prepared pipeline."""
+    return z.prepare_zm_rotation_cache(
+        cache["BinomialCache"],
+        case.max_order,
+        cache["CLMCache"],
+        cache["s_id"],
+        cache["n"],
+        cache["l"],
+        cache["m"],
+        cache["mu"],
+        cache["k"],
+        cache["IsNLM_Value"],
     )
 
 
@@ -378,12 +403,16 @@ def run_prepared_pipeline(
         return candidates, _canonical_candidate_batch(candidates)
 
     candidates, candidate_batch = execute("ab_candidates", build_candidates)
-    rotated = execute(
-        "zm_rotation",
-        lambda: functions["rotate"](
-            *_rotation_args(raw, candidate_batch, case.max_order, cache)
-        ),
-    )
+    def rotate():
+        if context.rotation_cache is None:
+            return functions["rotate"](
+                *_rotation_args(raw, candidate_batch, case.max_order, cache)
+            )
+        return functions["rotate_batch"](
+            raw, candidate_batch, context.rotation_cache
+        )
+
+    rotated = execute("zm_rotation", rotate)
 
     result = {
         "voxel": voxel,

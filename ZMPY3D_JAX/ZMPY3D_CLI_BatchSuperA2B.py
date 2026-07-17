@@ -136,23 +136,10 @@ def ZMPY3D_CLI_BatchSuperA2B(
 
         ABList_all = np.vstack(ABList_2 + ABList_3 + ABList_4 + ABList_5 + ABList_6)
 
-        ZMList_all = z.calculate_zm_by_ab_rotation(
-            ZMoment_raw,
-            BinomialCache,
-            ABList_all,
-            MaxOrder,
-            CLMCache,
-            s_id,
-            n,
-            l,
-            m,
-            mu,
-            k,
-            IsNLM_Value,
+        ZMList_all = z.calculate_zm_by_ab_rotation_batch(
+            ZMoment_raw, ABList_all, RotationCache
         )
-        ZMList_all = np.stack(ZMList_all, axis=3)
-
-        ZMList_all = np.transpose(ZMList_all, (2, 1, 0, 3))
+        ZMList_all = np.transpose(np.asarray(ZMList_all), (3, 2, 1, 0))
         ZMList_all = ZMList_all[~np.isnan(ZMList_all)]
         # Based on ABList_all, it is known in advance that Order 6 will definitely have 96 pairs of AB, which means 96 vectors.
         ZMList_all = np.reshape(ZMList_all, (np.int64(ZMList_all.size / 96), 96))
@@ -201,6 +188,9 @@ def ZMPY3D_CLI_BatchSuperA2B(
     mu = np.squeeze(RotationIndex["mu"][0, 0])
     k = np.squeeze(RotationIndex["k"][0, 0])
     IsNLM_Value = np.squeeze(RotationIndex["IsNLM_Value"][0, 0]) - 1
+    RotationCache = z.prepare_zm_rotation_cache(
+        BinomialCache, MaxOrder, CLMCache, s_id, n, l, m, mu, k, IsNLM_Value
+    )
 
     MaxN = MaxOrder + 1
 

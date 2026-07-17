@@ -6,13 +6,12 @@
 import math
 from typing import List, Tuple
 
-import chex
-import jax.numpy as jnp
+import numpy as np
 
 import ZMPY3D_JAX.config as _config
 
 
-def get_pdb_xyz_ca02(file_name: str) -> Tuple[chex.Array, List[str]]:
+def get_pdb_xyz_ca02(file_name: str) -> Tuple[np.ndarray, List[str]]:
     """Parses a PDB file to extract the XYZ coordinates and amino acid names
     specifically for C-alpha (CA) atoms. It also checks for NaN values in coordinates.
 
@@ -54,6 +53,6 @@ def get_pdb_xyz_ca02(file_name: str) -> Tuple[chex.Array, List[str]]:
         if any(map(math.isnan, [x, y, z])):
             raise ValueError("has nan in XYZ")
 
-    xyz_matrix = jnp.asarray(xyz, dtype=_config.FLOAT_DTYPE).reshape((-1, 3))
+    xyz_matrix = np.asarray(xyz, dtype=_config.FLOAT_DTYPE).reshape((-1, 3))
 
     return xyz_matrix, aa_names

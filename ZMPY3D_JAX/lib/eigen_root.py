@@ -6,30 +6,32 @@ import jax.numpy as jnp
 import ZMPY3D_JAX.config as _config
 
 
-def eigen_root(poly_coefficient_list: chex.Array) -> chex.Array:
-    """Calculates the roots of a polynomial given its coefficients by constructing
-    a companion matrix and finding its eigenvalues.
-    """
-    COMPLEX_DTYPE = _config.COMPLEX_DTYPE
-    coef = jnp.asarray(poly_coefficient_list, dtype=COMPLEX_DTYPE).reshape(-1)
+@jax.jit
+def _eigen_root_jax(coef: chex.Array) -> chex.Array:
+    """Fixed-shape compiled companion-matrix eigensolve."""
+    complex_dtype = jnp.result_type(coef.dtype, jnp.complex64)
+    coef = jnp.asarray(coef, dtype=complex_dtype)
     n = coef.shape[0] - 1
 
     if n <= 0:
-        return jnp.asarray([], dtype=COMPLEX_DTYPE)
+        return jnp.asarray([], dtype=coef.dtype)
 
-    # Define true_fn and false_fn for jax.lax.cond
     def true_fn(c):
-        # Return NaNs to indicate an invalid input (leading coefficient is zero)
-        return jnp.full((n,), jnp.nan, dtype=COMPLEX_DTYPE)
+        return jnp.full((n,), jnp.nan, dtype=coef.dtype)
 
     def false_fn(c):
-        # build companion matrix with ones on subdiagonal (concise)
-        m = jnp.diag(jnp.ones(n - 1, dtype=COMPLEX_DTYPE), k=-1)
+        m = jnp.diag(jnp.ones(n - 1, dtype=coef.dtype), k=-1)
         m = m.at[0, :].set(-c[1:] / c[0])
         return jnp.linalg.eigvals(m)
 
     return jax.lax.cond(coef[0] == 0, true_fn, false_fn, coef)
 
 
-# Vectorized version for batching
-batched_eigen_root = jax.vmap(eigen_root)
+def eigen_root(poly_coefficient_list: chex.Array) -> chex.Array:
+    """Calculate polynomial roots through a dtype-aware compiled kernel."""
+    coef = jnp.asarray(poly_coefficient_list, dtype=_config.COMPLEX_DTYPE).reshape(-1)
+    return _eigen_root_jax(coef)
+
+
+# Use the fixed-shape kernel directly when nested inside other compiled kernels.
+batched_eigen_root = jax.vmap(_eigen_root_jax)

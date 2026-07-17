@@ -13,7 +13,7 @@ import ZMPY3D_JAX.config as _config
 
 
 def fill_voxel_by_weight_density04(
-    xyz: np.ndarray,
+    xyz: chex.Array,
     aa_name_list: Sequence[str],
     residue_weight_map: Dict[str, float],
     grid_width: float,
@@ -35,6 +35,8 @@ def fill_voxel_by_weight_density04(
             - voxel3d (np.ndarray): A 3D NumPy array representing the filled voxel grid.
             - corner_xyz (np.ndarray): A 1D NumPy array representing the corner coordinates of the voxel grid.
     """
+    xyz = np.asarray(xyz, dtype=_config.FLOAT_DTYPE).reshape((-1, 3))
+
     if len(aa_name_list) != xyz.shape[0]:
         raise ValueError("aa_name_list must contain one residue name per coordinate")
 
@@ -49,6 +51,13 @@ def fill_voxel_by_weight_density04(
     if unknown:
         raise ValueError(f"Unknown residue name(s): {', '.join(unknown)}")
 
+    # This is intentionally a host-side kernel. Normalize each required box once,
+    # rather than triggering a JAX-to-NumPy conversion for every atom placement.
+    host_residue_box = {
+        name: np.asarray(residue_box[name], dtype=_config.FLOAT_DTYPE)
+        for name in set(aa_name_list)
+    }
+
     min_bbox_point = np.min(xyz, axis=0)
     max_bbox_point = np.max(xyz, axis=0)
     dimension_bbox_unscaled = max_bbox_point - min_bbox_point
@@ -60,15 +69,14 @@ def fill_voxel_by_weight_density04(
     )
     corner_xyz = min_bbox_point - max_box_edge * grid_width / 2
 
-    weight_multiplier = 1
     num_of_atom = xyz.shape[0]
 
-    voxel3d = np.zeros(dimension_bbox_scaled)
+    voxel3d = np.zeros(dimension_bbox_scaled, dtype=_config.FLOAT_DTYPE)
 
     for i in range(num_of_atom):
         aa_name = aa_name_list[i]
         coord = xyz[i, :]
-        aa_box = residue_box[aa_name]
+        aa_box = host_residue_box[aa_name]
         box_edge = aa_box.shape[0]
 
         coord_box_corner = np.trunc(
@@ -78,9 +86,7 @@ def fill_voxel_by_weight_density04(
         start = coord_box_corner
         end = coord_box_corner + box_edge
 
-        voxel3d[start[0] : end[0], start[1] : end[1], start[2] : end[2]] += (
-            aa_box * weight_multiplier
-        )
+        voxel3d[start[0] : end[0], start[1] : end[1], start[2] : end[2]] += aa_box
 
     return jnp.asarray(voxel3d, dtype=_config.FLOAT_DTYPE), jnp.asarray(
         corner_xyz, dtype=_config.FLOAT_DTYPE

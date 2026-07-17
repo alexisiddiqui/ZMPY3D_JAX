@@ -9,8 +9,6 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-import chex
-import jax.numpy as jnp
 import numpy as np
 import pytest
 
@@ -35,22 +33,8 @@ class TestCalculateBoxByGridWidth:
 
     @pytest.fixture
     def residue_box_cache(self, param):
-        """Get residue gaussian density cache and convert boxes to JAX arrays."""
-        res_cache = z.get_residue_gaussian_density_cache(param)
-        # Convert nested boxes to JAX arrays
-        jax_cache = {}
-        for gw, res_box in res_cache.items():
-            try:
-                # residue box is a dict of numpy arrays
-                jax_res_box = {name: jnp.asarray(box) for name, box in res_box.items()}
-                jax_cache[gw] = jax_res_box
-            except Exception:
-                # fallback: attempt a direct conversion
-                try:
-                    jax_cache[gw] = jnp.asarray(res_box)
-                except Exception:
-                    jax_cache[gw] = res_box
-        return jax_cache
+        """Get the host-native residue Gaussian density cache."""
+        return z.get_residue_gaussian_density_cache(param)
 
     def test_standard_grid_widths(self, param, residue_box_cache):
         """Test box generation for standard grid widths."""
@@ -75,7 +59,7 @@ class TestCalculateBoxByGridWidth:
 
         for residue_name, box in residue_box.items():
             # Each box should be a 3D numpy array
-            assert isinstance(box, chex.Array)
+            assert isinstance(box, np.ndarray)
             assert box.ndim == 3
 
             # Dimensions should be odd (centered)

@@ -29,6 +29,7 @@ from ZMPY3D_JAX.tests.utils.upstream_regression import (
     build_upstream_setup,
     load_cache,
     pdb_input,
+    prepare_jax_rotation_cache,
     prepare_pipeline_context,
     run_prepared_pipeline,
 )
@@ -189,7 +190,7 @@ def _output_path() -> Path:
 
 
 def _validate_payload(payload: dict[str, Any]) -> None:
-    assert payload["schema_version"] == 2
+    assert payload["schema_version"] == 3
     results = payload["results"]
     assert set(results) == {
         "setup",
@@ -264,8 +265,15 @@ def test_regression_runtime_snapshot() -> None:
 
     jax_setup_value, jax_setup_seconds = _time_call(build_jax_setup)
     upstream_setup_value, upstream_setup_seconds = _time_call(build_upstream_setup)
+    rotation_cache, rotation_cache_seconds = _time_call(
+        lambda: prepare_jax_rotation_cache(case, cache)
+    )
     jax_context = prepare_pipeline_context(
-        "jax", case, cache=cache, setup=jax_setup_value
+        "jax",
+        case,
+        cache=cache,
+        setup=jax_setup_value,
+        rotation_cache=rotation_cache,
     )
     upstream_context = prepare_pipeline_context(
         "upstream", case, cache=cache, setup=upstream_setup_value
@@ -328,7 +336,7 @@ def test_regression_runtime_snapshot() -> None:
     )
 
     payload = {
-        "schema_version": 2,
+        "schema_version": 3,
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
         "comparison_mode": "informational",
         "configuration": {
@@ -340,6 +348,8 @@ def test_regression_runtime_snapshot() -> None:
             "samples": sample_count,
             "repeats_per_sample": repeats,
             "jax_x64_enabled": bool(jax.config.x64_enabled),
+            "jax_rotation_representation": "prepared_device_cache_and_batched_output",
+            "preprocessing_representation": "numpy_parser_and_residue_cache_to_jax_voxel",
         },
         "environment": {
             "git_revision": _git_revision(),
@@ -357,6 +367,7 @@ def test_regression_runtime_snapshot() -> None:
                 "shared_input_and_cache_seconds": shared_setup_seconds,
                 "jax_seconds": jax_setup_seconds,
                 "upstream_seconds": upstream_setup_seconds,
+                "jax_rotation_cache_seconds": rotation_cache_seconds,
             },
             "first_execution": {
                 "jax_seconds": jax_first_seconds,

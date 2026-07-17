@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 
 import chex
+import jax.numpy as jnp
 import numpy as np
 import pytest
 
@@ -169,6 +170,32 @@ class TestFillVoxelByWeightDensity:
 
         np.testing.assert_array_equal(voxel3d_1, voxel3d_2)
         np.testing.assert_array_equal(corner_xyz_1, corner_xyz_2)
+
+    def test_legacy_jax_inputs_are_normalized_once(
+        self, param, residue_box_cache, sample_coords_multiple_atoms, sample_aa_multiple_atoms
+    ):
+        grid_width = 1.0
+        host_result = z.fill_voxel_by_weight_density(
+            sample_coords_multiple_atoms,
+            sample_aa_multiple_atoms,
+            param["residue_weight_map"],
+            grid_width,
+            residue_box_cache[grid_width],
+        )
+        legacy_boxes = {
+            name: jnp.asarray(box) for name, box in residue_box_cache[grid_width].items()
+        }
+        legacy_result = z.fill_voxel_by_weight_density(
+            jnp.asarray(sample_coords_multiple_atoms),
+            sample_aa_multiple_atoms,
+            param["residue_weight_map"],
+            grid_width,
+            legacy_boxes,
+        )
+
+        for actual, expected in zip(legacy_result, host_result):
+            assert isinstance(actual, chex.Array)
+            np.testing.assert_array_equal(actual, expected)
 
     def test_voxel_dimensions_and_corner(
         self, param, residue_box_cache, sample_coords_single_atom, sample_aa_single_atom
