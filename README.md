@@ -141,15 +141,17 @@ ZMPY3D_REGRESSION_REPEATS=5 ZMPY3D_REGRESSION_SAMPLES=9 \
   pytest -m benchmark ZMPY3D_JAX/tests/benchmark/test_benchmark_regression_upstream.py
 ```
 
-The benchmark enables CPU/x64 explicitly, reports cold JAX and warmed timing distributions, and
-writes timestamped JSON results under:
+The benchmark enables CPU/x64 explicitly and writes schema-v2 JSON containing separate setup,
+first-execution, warmed end-to-end, and synchronized per-stage timing distributions. It also ranks
+stages by their contribution to the warmed JAX-over-upstream CPU gap. Results are written under:
 
 ```text
 ZMPY3D_JAX/tests/benchmark/_simple_time_benchmark/upstream_regression_benchmark_*.json
 ```
 
 Set `ZMPY3D_BENCHMARK_OUTPUT` to write results to another directory. Timing is deliberately
-informational and does not fail on a hardware-dependent speed threshold.
+informational and does not fail on a hardware-dependent speed threshold. Synchronized stage
+timings are diagnostic and should not be summed or treated as end-to-end latency.
 
 Run a focused module test:
 

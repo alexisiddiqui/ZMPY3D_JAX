@@ -8,7 +8,7 @@ import sys
 from dataclasses import dataclass, replace
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 import numpy as np
 
@@ -34,6 +34,18 @@ class RegressionInput:
 
     def with_order(self, max_order: int) -> "RegressionInput":
         return replace(self, name=f"{self.name}-order{max_order}", max_order=max_order)
+
+
+@dataclass(frozen=True)
+class PipelineContext:
+    """Materialized implementation-specific setup for one regression input."""
+
+    implementation: str
+    case: RegressionInput
+    cache: dict[str, Any]
+    params: dict[str, Any]
+    residue_boxes: dict[float, Any]
+    functions: dict[str, Callable[..., Any]]
 
 
 def block_tree(value: Any) -> None:
@@ -187,17 +199,77 @@ def load_cache(max_order: int) -> dict[str, Any]:
     }
 
 
-@lru_cache(maxsize=1)
-def jax_setup() -> tuple[dict[str, Any], dict[float, Any]]:
+def build_jax_setup() -> tuple[dict[str, Any], dict[float, Any]]:
+    """Build uncached JAX parameters and residue-density boxes."""
     params = z.get_global_parameter()
     return params, z.get_residue_gaussian_density_cache(params)
 
 
-@lru_cache(maxsize=1)
-def upstream_setup() -> tuple[dict[str, Any], dict[float, Any]]:
+def build_upstream_setup() -> tuple[dict[str, Any], dict[float, Any]]:
+    """Build uncached upstream parameters and residue-density boxes."""
     functions = upstream_functions()
     params = functions["get_global_parameter"]()
     return params, functions["get_residue_cache"](params)
+
+
+@lru_cache(maxsize=1)
+def jax_setup() -> tuple[dict[str, Any], dict[float, Any]]:
+    return build_jax_setup()
+
+
+@lru_cache(maxsize=1)
+def upstream_setup() -> tuple[dict[str, Any], dict[float, Any]]:
+    return build_upstream_setup()
+
+
+def prepare_pipeline_context(
+    implementation: str,
+    case: RegressionInput,
+    *,
+    cache: dict[str, Any] | None = None,
+    setup: tuple[dict[str, Any], dict[float, Any]] | None = None,
+) -> PipelineContext:
+    """Resolve functions and setup before a pipeline is timed or executed."""
+    if implementation not in {"jax", "upstream"}:
+        raise ValueError(f"Unknown implementation: {implementation}")
+
+    cache = load_cache(case.max_order) if cache is None else cache
+    if implementation == "jax":
+        params, residue_boxes = jax_setup() if setup is None else setup
+        functions = {
+            "fill_voxel": z.fill_voxel_by_weight_density,
+            "bbox": z.calculate_bbox_moment,
+            "radius": z.calculate_molecular_radius,
+            "xyz_sample": z.get_bbox_moment_xyz_sample,
+            "bbox_to_zm": z.calculate_bbox_moment_2_zm,
+            "descriptor": z.get_3dzd_121_descriptor,
+            "ab": z.calculate_ab_rotation,
+            "ab_all": z.calculate_ab_rotation_all,
+            "rotate": z.calculate_zm_by_ab_rotation,
+        }
+    else:
+        params, residue_boxes = upstream_setup() if setup is None else setup
+        upstream = upstream_functions()
+        functions = {key: upstream[key] for key in (
+            "fill_voxel",
+            "bbox",
+            "radius",
+            "xyz_sample",
+            "bbox_to_zm",
+            "descriptor",
+            "ab",
+            "ab_all",
+            "rotate",
+        )}
+
+    return PipelineContext(
+        implementation=implementation,
+        case=case,
+        cache=cache,
+        params=params,
+        residue_boxes=residue_boxes,
+        functions=functions,
+    )
 
 
 def _rotation_args(raw: Any, ab_pairs: np.ndarray, max_order: int, cache: dict[str, Any]):
@@ -227,75 +299,91 @@ def _canonical_candidate_batch(candidates: dict[int, list[np.ndarray]]) -> np.nd
     return np.vstack(arrays) if arrays else np.empty((0, 2), dtype=np.complex128)
 
 
-def run_pipeline(
-    implementation: str,
-    case: RegressionInput,
+StageExecutor = Callable[[str, Callable[[], Any]], Any]
+
+
+def _execute_directly(_name: str, function: Callable[[], Any]) -> Any:
+    return function()
+
+
+def run_prepared_pipeline(
+    context: PipelineContext,
     *,
     normalization_orders: Iterable[int] = range(2, 6),
     all_candidates: bool = True,
+    stage_executor: StageExecutor | None = None,
 ) -> dict[str, Any]:
-    """Run exactly one implementation and return comparable stage outputs."""
-    if implementation not in {"jax", "upstream"}:
-        raise ValueError(f"Unknown implementation: {implementation}")
+    """Run a prepared pipeline, optionally routing work through named stage timers."""
+    case = context.case
+    cache = context.cache
+    params = context.params
+    residue_boxes = context.residue_boxes
+    functions = context.functions
+    execute = _execute_directly if stage_executor is None else stage_executor
 
-    cache = load_cache(case.max_order)
-    if implementation == "jax":
-        params, residue_boxes = jax_setup()
-        fill_voxel = z.fill_voxel_by_weight_density
-        bbox = z.calculate_bbox_moment
-        radius = z.calculate_molecular_radius
-        xyz_sample = z.get_bbox_moment_xyz_sample
-        bbox_to_zm = z.calculate_bbox_moment_2_zm
-        descriptor = z.get_3dzd_121_descriptor
-        ab = z.calculate_ab_rotation_all if all_candidates else z.calculate_ab_rotation
-        rotate = z.calculate_zm_by_ab_rotation
-    else:
-        functions = upstream_functions()
-        params, residue_boxes = upstream_setup()
-        fill_voxel = functions["fill_voxel"]
-        bbox = functions["bbox"]
-        radius = functions["radius"]
-        xyz_sample = functions["xyz_sample"]
-        bbox_to_zm = functions["bbox_to_zm"]
-        descriptor = functions["descriptor"]
-        ab = functions["ab_all"] if all_candidates else functions["ab"]
-        rotate = functions["rotate"]
-
-    voxel, corner = fill_voxel(
-        np.asarray(case.xyz),
-        list(case.residues),
-        params["residue_weight_map"],
-        case.grid_width,
-        residue_boxes[case.grid_width],
+    voxel, corner = execute(
+        "voxelization",
+        lambda: functions["fill_voxel"](
+            np.asarray(case.xyz),
+            list(case.residues),
+            params["residue_weight_map"],
+            case.grid_width,
+            residue_boxes[case.grid_width],
+        ),
     )
     samples = {
         "X_sample": np.arange(voxel.shape[0] + 1, dtype=float),
         "Y_sample": np.arange(voxel.shape[1] + 1, dtype=float),
         "Z_sample": np.arange(voxel.shape[2] + 1, dtype=float),
     }
-    mass, center, bbox_order1 = bbox(voxel, 1, samples)
-    average_radius, max_radius = radius(
-        voxel, center, mass, params["default_radius_multiplier"]
+    mass, center, bbox_order1 = execute(
+        "bbox_order1", lambda: functions["bbox"](voxel, 1, samples)
     )
-    sphere = xyz_sample(center, average_radius, voxel.shape)
-    mass_n, center_n, bbox_order_n = bbox(voxel, case.max_order, sphere)
-    scaled, raw = bbox_to_zm(
-        case.max_order,
-        cache["GCache_complex"],
-        cache["GCache_pqr_linear"],
-        cache["GCache_complex_index"],
-        cache["CLMCache3D"],
-        bbox_order_n,
+
+    def radius_and_sphere():
+        average_radius, max_radius = functions["radius"](
+            voxel, center, mass, params["default_radius_multiplier"]
+        )
+        sphere = functions["xyz_sample"](center, average_radius, voxel.shape)
+        return average_radius, max_radius, sphere
+
+    average_radius, max_radius, sphere = execute(
+        "radius_and_sphere", radius_and_sphere
     )
-    descriptor_value = descriptor(np.asarray(scaled).copy())
+    mass_n, center_n, bbox_order_n = execute(
+        "bbox_max_order",
+        lambda: functions["bbox"](voxel, case.max_order, sphere),
+    )
+    scaled, raw = execute(
+        "bbox_to_zm",
+        lambda: functions["bbox_to_zm"](
+            case.max_order,
+            cache["GCache_complex"],
+            cache["GCache_pqr_linear"],
+            cache["GCache_complex_index"],
+            cache["CLMCache3D"],
+            bbox_order_n,
+        ),
+    )
+    descriptor_value = execute(
+        "descriptor", lambda: functions["descriptor"](np.asarray(scaled).copy())
+    )
 
-    candidates: dict[int, list[np.ndarray]] = {}
-    for order in normalization_orders:
-        value = ab(raw, order)
-        candidates[order] = list(value) if all_candidates else [np.asarray(value)]
+    def build_candidates():
+        ab_function = functions["ab_all"] if all_candidates else functions["ab"]
+        candidates: dict[int, list[np.ndarray]] = {}
+        for order in normalization_orders:
+            value = ab_function(raw, order)
+            candidates[order] = list(value) if all_candidates else [np.asarray(value)]
+        return candidates, _canonical_candidate_batch(candidates)
 
-    candidate_batch = _canonical_candidate_batch(candidates)
-    rotated = rotate(*_rotation_args(raw, candidate_batch, case.max_order, cache))
+    candidates, candidate_batch = execute("ab_candidates", build_candidates)
+    rotated = execute(
+        "zm_rotation",
+        lambda: functions["rotate"](
+            *_rotation_args(raw, candidate_batch, case.max_order, cache)
+        ),
+    )
 
     result = {
         "voxel": voxel,
@@ -317,3 +405,19 @@ def run_pipeline(
     }
     block_tree(result)
     return result
+
+
+def run_pipeline(
+    implementation: str,
+    case: RegressionInput,
+    *,
+    normalization_orders: Iterable[int] = range(2, 6),
+    all_candidates: bool = True,
+) -> dict[str, Any]:
+    """Run exactly one implementation and return comparable stage outputs."""
+    context = prepare_pipeline_context(implementation, case)
+    return run_prepared_pipeline(
+        context,
+        normalization_orders=normalization_orders,
+        all_candidates=all_candidates,
+    )
