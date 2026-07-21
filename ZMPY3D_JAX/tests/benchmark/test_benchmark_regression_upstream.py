@@ -29,6 +29,7 @@ from ZMPY3D_JAX.tests.utils.upstream_regression import (
     build_upstream_setup,
     load_cache,
     pdb_input,
+    prepare_jax_bbox_to_zm_cache,
     prepare_jax_rotation_cache,
     prepare_pipeline_context,
     run_prepared_pipeline,
@@ -268,12 +269,16 @@ def test_regression_runtime_snapshot() -> None:
     rotation_cache, rotation_cache_seconds = _time_call(
         lambda: prepare_jax_rotation_cache(case, cache)
     )
+    bbox_to_zm_cache, bbox_to_zm_cache_seconds = _time_call(
+        lambda: prepare_jax_bbox_to_zm_cache(case, cache)
+    )
     jax_context = prepare_pipeline_context(
         "jax",
         case,
         cache=cache,
         setup=jax_setup_value,
         rotation_cache=rotation_cache,
+        bbox_to_zm_cache=bbox_to_zm_cache,
     )
     upstream_context = prepare_pipeline_context(
         "upstream", case, cache=cache, setup=upstream_setup_value
@@ -350,6 +355,10 @@ def test_regression_runtime_snapshot() -> None:
             "jax_x64_enabled": bool(jax.config.x64_enabled),
             "jax_rotation_representation": "prepared_device_cache_and_batched_output",
             "preprocessing_representation": "numpy_parser_and_residue_cache_to_jax_voxel",
+            "radius_sphere_representation": "fused_fixed_shape_jax_reduction",
+            "bbox_moment_representation": "compiled_direct_cell_integral_contraction",
+            "bbox_to_zm_representation": "prepared_device_cache_and_compiled_scatter",
+            "ab_candidate_representation": "fused_fixed_shape_kernel_with_cpu_compaction",
         },
         "environment": {
             "git_revision": _git_revision(),
@@ -368,6 +377,7 @@ def test_regression_runtime_snapshot() -> None:
                 "jax_seconds": jax_setup_seconds,
                 "upstream_seconds": upstream_setup_seconds,
                 "jax_rotation_cache_seconds": rotation_cache_seconds,
+                "jax_bbox_to_zm_cache_seconds": bbox_to_zm_cache_seconds,
             },
             "first_execution": {
                 "jax_seconds": jax_first_seconds,

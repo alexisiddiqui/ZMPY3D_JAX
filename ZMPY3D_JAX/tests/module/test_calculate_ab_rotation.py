@@ -126,11 +126,30 @@ class TestCalculateABRotation:
         # Should get same results
         np.testing.assert_array_almost_equal(ab_array_1, ab_array_2)
 
+    @pytest.mark.parametrize("target_order", range(2, 7))
+    def test_fixed_candidates_match_public_api(self, real_protein_zm, target_order):
+        """The fixed representation compacts to the legacy single-order result."""
+        fixed = z.calculate_ab_rotation_candidates(real_protein_zm, target_order)
+        expected = z.calculate_ab_rotation(real_protein_zm, target_order)
+        actual = np.asarray(fixed.pairs)[np.asarray(fixed.is_valid)]
+
+        assert isinstance(fixed, z.ABRotationCandidates)
+        assert fixed.pairs.ndim == 2
+        assert fixed.pairs.shape[1] == 2
+        assert fixed.is_valid.shape == fixed.pairs.shape[:1]
+        assert fixed.is_valid.dtype == np.bool_
+        np.testing.assert_array_equal(actual, expected)
+
     def test_zero_moments(self):
         """Test with zero Zernike moments."""
         # Create properly structured zero array
         max_order = 6
         zero_zm = np.zeros((max_order + 1, max_order + 1, 2 * max_order + 1), dtype=complex)
+        fixed = z.calculate_ab_rotation_candidates(zero_zm, 2)
+
+        assert fixed.pairs.shape == (16, 2)
+        assert fixed.is_valid.shape == (16,)
+        assert not bool(np.any(fixed.is_valid))
 
         # The function should handle zero input gracefully or raise an error
         try:
@@ -266,6 +285,22 @@ class TestCalculateABRotationAll:
         # Should get same values
         for arr1, arr2 in zip(ab_list_1, ab_list_2):
             np.testing.assert_array_almost_equal(arr1, arr2)
+
+    @pytest.mark.parametrize("target_order", range(2, 7))
+    def test_fixed_candidate_groups_match_public_api(self, real_protein_zm, target_order):
+        """Grouped masks compact to the legacy all-orders NumPy list."""
+        fixed = z.calculate_ab_rotation_all_candidates(real_protein_zm, target_order)
+        expected = z.calculate_ab_rotation_all(real_protein_zm, target_order)
+        pairs = np.asarray(fixed.pairs)
+        is_valid = np.asarray(fixed.is_valid)
+        actual = [pairs[index][is_valid[index]] for index in range(pairs.shape[0])]
+
+        assert fixed.pairs.ndim == 3
+        assert fixed.pairs.shape[-1] == 2
+        assert fixed.is_valid.shape == fixed.pairs.shape[:-1]
+        assert len(actual) == len(expected)
+        for actual_group, expected_group in zip(actual, expected):
+            np.testing.assert_array_equal(actual_group, expected_group)
 
     def test_comparison_with_single(self, real_protein_zm):
         """The ind_real=2 entry must equal the single-order implementation."""

@@ -2,14 +2,17 @@
 # This function would be very efficient under JAX.
 
 
+from functools import partial
 from typing import Dict, Tuple
 
 import chex
+import jax
 import jax.numpy as jnp
 
 import ZMPY3D_JAX.config as _config
 
 
+@partial(jax.jit, static_argnums=(2,))
 def get_bbox_moment_xyz_sample01(
     center: chex.Array, radius: chex.Array, dimension_bbox_scaled: Tuple[int, int, int]
 ) -> Dict[str, chex.Array]:

@@ -206,6 +206,47 @@ class TestCalculateMolecularRadius:
         with pytest.raises(ValueError, match="zero-size array"):
             z.calculate_molecular_radius(voxel, center, volume_mass, multiplier)
 
+        with pytest.raises(ValueError, match="zero-size array"):
+            z.calculate_molecular_radius_and_bbox_samples(
+                voxel, center, volume_mass, multiplier
+            )
+
+    def test_negative_only_density_raises(self):
+        voxel = -np.ones((4, 5, 6))
+        center = np.array([2.0, 2.5, 3.0])
+
+        with pytest.raises(ValueError, match="zero-size array"):
+            z.calculate_molecular_radius(voxel, center, -voxel.size, 1.8)
+        with pytest.raises(ValueError, match="zero-size array"):
+            z.calculate_molecular_radius_and_bbox_samples(
+                jnp.asarray(voxel), center, -voxel.size, 1.8
+            )
+
+    def test_fused_radius_and_samples_match_standalone(self, spherical_voxel):
+        center = np.array([10.0, 10.0, 10.0])
+        volume_mass = np.sum(spherical_voxel)
+        multiplier = 1.8
+
+        expected_average, expected_maximum = z.calculate_molecular_radius(
+            spherical_voxel, center, volume_mass, multiplier
+        )
+        expected_samples = z.get_bbox_moment_xyz_sample(
+            center, expected_average, spherical_voxel.shape
+        )
+        actual_average, actual_maximum, actual_samples = (
+            z.calculate_molecular_radius_and_bbox_samples(
+                jnp.asarray(spherical_voxel), center, volume_mass, multiplier
+            )
+        )
+
+        np.testing.assert_allclose(actual_average, expected_average, rtol=0, atol=0)
+        np.testing.assert_allclose(actual_maximum, expected_maximum, rtol=0, atol=0)
+        assert actual_samples.keys() == expected_samples.keys()
+        for key in expected_samples:
+            np.testing.assert_allclose(
+                actual_samples[key], expected_samples[key], rtol=1e-7, atol=1e-7
+            )
+
     def test_anisotropic_distribution(self):
         """Test with an anisotropic (elongated) distribution."""
         voxel = np.zeros((20, 10, 10))

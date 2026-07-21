@@ -106,7 +106,11 @@ def ZMPY3D_CLI_ShapeScore(
         }
 
         [VolumeMass, Center, _] = z.calculate_bbox_moment(Voxel3D, 1, XYZ_SampleStruct)
-        [AverageVoxelDist2Center, MaxVoxelDist2Center] = z.calculate_molecular_radius(
+        [
+            AverageVoxelDist2Center,
+            MaxVoxelDist2Center,
+            SphereXYZ_SampleStruct,
+        ] = z.calculate_molecular_radius_and_bbox_samples(
             Voxel3D, Center, VolumeMass, Param["default_radius_multiplier"]
         )
 
@@ -114,18 +118,10 @@ def ZMPY3D_CLI_ShapeScore(
         # You may add any preprocessing on the voxel before applying the Zernike moment. #
         ##################################################################################
 
-        SphereXYZ_SampleStruct = z.get_bbox_moment_xyz_sample(
-            Center, AverageVoxelDist2Center, Dimension_BBox_scaled
-        )
         _, _, SphereBBoxMoment = z.calculate_bbox_moment(Voxel3D, MaxOrder, SphereXYZ_SampleStruct)
 
-        [ZMoment_scaled, ZMoment_raw] = z.calculate_bbox_moment_2_zm(
-            MaxOrder,
-            GCache_complex,
-            GCache_pqr_linear,
-            GCache_complex_index,
-            CLMCache3D,
-            SphereBBoxMoment,
+        [ZMoment_scaled, ZMoment_raw] = z.calculate_bbox_moment_2_zm_cached(
+            SphereBBoxMoment, BBoxToZMCache
         )
         # ZMoment_scaled[np.isnan(ZMoment_raw)]=np.nan
 
@@ -209,6 +205,9 @@ def ZMPY3D_CLI_ShapeScore(
     IsNLM_Value = np.squeeze(RotationIndex["IsNLM_Value"][0, 0]) - 1
     RotationCache = z.prepare_zm_rotation_cache(
         BinomialCache, MaxOrder, CLMCache, s_id, n, l, m, mu, k, IsNLM_Value
+    )
+    BBoxToZMCache = z.prepare_bbox_to_zm_cache(
+        MaxOrder, GCache_complex, GCache_pqr_linear, GCache_complex_index, CLMCache3D
     )
 
     MaxN = MaxOrder + 1

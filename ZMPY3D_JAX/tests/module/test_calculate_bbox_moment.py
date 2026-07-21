@@ -7,6 +7,7 @@ from pathlib import Path
 
 import chex
 import jax.numpy as jnp
+import numpy as np
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
@@ -125,3 +126,31 @@ class TestCalculateBBoxMoment:
         chex.assert_shape(moment, (3, 3, 3))
         assert center.dtype == jnp.float64
         assert moment.dtype == jnp.float64
+
+    def test_matches_direct_cell_integral_reference(self):
+        """Match an independent reference for non-unit, asymmetric cell edges."""
+        voxel = np.arange(24, dtype=np.float64).reshape(2, 3, 4) / 7.0
+        samples = {
+            "X_sample": np.array([-0.7, -0.1, 0.8]),
+            "Y_sample": np.array([-1.0, -0.4, 0.2, 1.1]),
+            "Z_sample": np.array([-0.8, -0.3, 0.0, 0.5, 0.9]),
+        }
+        max_order = 6
+        powers = np.arange(1, max_order + 2)
+        bases = [
+            (edges[1:, None] ** powers - edges[:-1, None] ** powers) / powers
+            for edges in samples.values()
+        ]
+        expected = np.einsum("ia,jb,kc,ijk->abc", *bases, voxel, optimize=True)
+
+        mass, center, moment = z.calculate_bbox_moment(voxel, max_order, samples)
+
+        np.testing.assert_allclose(moment, expected, rtol=2e-12, atol=2e-12)
+        np.testing.assert_allclose(mass, expected[0, 0, 0], rtol=2e-12, atol=2e-12)
+        np.testing.assert_allclose(
+            center,
+            np.array([expected[1, 0, 0], expected[0, 1, 0], expected[0, 0, 1]])
+            / expected[0, 0, 0],
+            rtol=2e-12,
+            atol=2e-12,
+        )

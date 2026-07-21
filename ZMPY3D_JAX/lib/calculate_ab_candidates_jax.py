@@ -1,11 +1,19 @@
 from functools import partial
+from typing import NamedTuple
 
 import chex
 import jax
 import jax.numpy as jnp
 
 from ZMPY3D_JAX import config as _config
-from ZMPY3D_JAX.lib.eigen_root import batched_eigen_root
+from ZMPY3D_JAX.lib.eigen_root import _eigen_root_jax, batched_eigen_root
+
+
+class ABRotationCandidates(NamedTuple):
+    """Fixed-shape Cayley--Klein pairs and their validity mask."""
+
+    pairs: chex.Array
+    is_valid: chex.Array
 
 
 def _compute_ab_candidates_impl(
@@ -82,3 +90,60 @@ def compute_ab_candidates_jax(
     z_moment_raw: chex.Array, abconj_sol: chex.Array, ind_real: int
 ) -> tuple[chex.Array, chex.Array, chex.Array]:
     return _compute_ab_candidates_impl(z_moment_raw, abconj_sol, ind_real)
+
+
+def _abconj_coefficients(
+    z_moment_raw: chex.Array, target_order2_norm_rotate: int
+) -> chex.Array:
+    """Build the parity-specific polynomial coefficients inside a compiled trace."""
+    if target_order2_norm_rotate % 2 == 0:
+        return jnp.array(
+            [
+                z_moment_raw[target_order2_norm_rotate, 2, 2],
+                -z_moment_raw[target_order2_norm_rotate, 2, 1],
+                z_moment_raw[target_order2_norm_rotate, 2, 0],
+                jnp.conj(z_moment_raw[target_order2_norm_rotate, 2, 1]),
+                jnp.conj(z_moment_raw[target_order2_norm_rotate, 2, 2]),
+            ],
+            dtype=z_moment_raw.dtype,
+        )
+    return jnp.array(
+        [
+            z_moment_raw[target_order2_norm_rotate, 1, 1],
+            -z_moment_raw[target_order2_norm_rotate, 1, 0],
+            -jnp.conj(z_moment_raw[target_order2_norm_rotate, 1, 1]),
+        ],
+        dtype=z_moment_raw.dtype,
+    )
+
+
+@partial(jax.jit, static_argnums=(1,))
+def calculate_ab_rotation_candidates(
+    z_moment_raw: chex.Array, target_order2_norm_rotate: int
+) -> ABRotationCandidates:
+    """Generate the single-order candidates without dynamic filtering."""
+    z_moment_raw = jnp.asarray(z_moment_raw, dtype=_config.COMPLEX_DTYPE)
+    coefficients = _abconj_coefficients(z_moment_raw, target_order2_norm_rotate)
+    abconj_sol = _eigen_root_jax(coefficients)
+    a, b, is_valid = _compute_ab_candidates_impl(z_moment_raw, abconj_sol, 2)
+    pairs = jnp.stack((a, b), axis=-1).reshape((-1, 2))
+    return ABRotationCandidates(pairs, is_valid.reshape(-1))
+
+
+@partial(jax.jit, static_argnums=(1,))
+def calculate_ab_rotation_all_candidates(
+    z_moment_raw: chex.Array, target_order2_norm_rotate: int
+) -> ABRotationCandidates:
+    """Generate candidates for every supported ``ind_real`` as fixed groups."""
+    z_moment_raw = jnp.asarray(z_moment_raw, dtype=_config.COMPLEX_DTYPE)
+    coefficients = _abconj_coefficients(z_moment_raw, target_order2_norm_rotate)
+    abconj_sol = _eigen_root_jax(coefficients)
+    ind_real_all = jnp.arange(2, z_moment_raw.shape[0], 2)
+    a, b, is_valid = jax.vmap(
+        lambda ind_real: _compute_ab_candidates_impl(
+            z_moment_raw, abconj_sol, ind_real
+        )
+    )(ind_real_all)
+    group_count = ind_real_all.shape[0]
+    pairs = jnp.stack((a, b), axis=-1).reshape((group_count, -1, 2))
+    return ABRotationCandidates(pairs, is_valid.reshape((group_count, -1)))

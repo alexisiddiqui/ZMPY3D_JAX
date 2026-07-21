@@ -47,6 +47,7 @@ class PipelineContext:
     residue_boxes: dict[float, Any]
     functions: dict[str, Callable[..., Any]]
     rotation_cache: Any | None = None
+    bbox_to_zm_cache: Any | None = None
 
 
 def block_tree(value: Any) -> None:
@@ -230,6 +231,7 @@ def prepare_pipeline_context(
     cache: dict[str, Any] | None = None,
     setup: tuple[dict[str, Any], dict[float, Any]] | None = None,
     rotation_cache: Any | None = None,
+    bbox_to_zm_cache: Any | None = None,
 ) -> PipelineContext:
     """Resolve functions and setup before a pipeline is timed or executed."""
     if implementation not in {"jax", "upstream"}:
@@ -242,16 +244,22 @@ def prepare_pipeline_context(
             "fill_voxel": z.fill_voxel_by_weight_density,
             "bbox": z.calculate_bbox_moment,
             "radius": z.calculate_molecular_radius,
+            "radius_and_sphere": z.calculate_molecular_radius_and_bbox_samples,
             "xyz_sample": z.get_bbox_moment_xyz_sample,
             "bbox_to_zm": z.calculate_bbox_moment_2_zm,
+            "bbox_to_zm_cached": z.calculate_bbox_moment_2_zm_cached,
             "descriptor": z.get_3dzd_121_descriptor,
             "ab": z.calculate_ab_rotation,
             "ab_all": z.calculate_ab_rotation_all,
+            "ab_fixed": z.calculate_ab_rotation_candidates,
+            "ab_all_fixed": z.calculate_ab_rotation_all_candidates,
             "rotate": z.calculate_zm_by_ab_rotation,
             "rotate_batch": z.calculate_zm_by_ab_rotation_batch,
         }
         if rotation_cache is None:
             rotation_cache = prepare_jax_rotation_cache(case, cache)
+        if bbox_to_zm_cache is None:
+            bbox_to_zm_cache = prepare_jax_bbox_to_zm_cache(case, cache)
     else:
         params, residue_boxes = upstream_setup() if setup is None else setup
         upstream = upstream_functions()
@@ -267,6 +275,7 @@ def prepare_pipeline_context(
             "rotate",
         )}
         rotation_cache = None
+        bbox_to_zm_cache = None
 
     return PipelineContext(
         implementation=implementation,
@@ -276,6 +285,7 @@ def prepare_pipeline_context(
         residue_boxes=residue_boxes,
         functions=functions,
         rotation_cache=rotation_cache,
+        bbox_to_zm_cache=bbox_to_zm_cache,
     )
 
 
@@ -294,6 +304,19 @@ def prepare_jax_rotation_cache(
         cache["mu"],
         cache["k"],
         cache["IsNLM_Value"],
+    )
+
+
+def prepare_jax_bbox_to_zm_cache(
+    case: RegressionInput, cache: dict[str, Any]
+) -> z.BBoxToZMCache:
+    """Materialize the JAX-only bbox-to-ZM constants for a prepared pipeline."""
+    return z.prepare_bbox_to_zm_cache(
+        case.max_order,
+        cache["GCache_complex"],
+        cache["GCache_pqr_linear"],
+        cache["GCache_complex_index"],
+        cache["CLMCache3D"],
     )
 
 
@@ -366,6 +389,10 @@ def run_prepared_pipeline(
     )
 
     def radius_and_sphere():
+        if "radius_and_sphere" in functions:
+            return functions["radius_and_sphere"](
+                voxel, center, mass, params["default_radius_multiplier"]
+            )
         average_radius, max_radius = functions["radius"](
             voxel, center, mass, params["default_radius_multiplier"]
         )
@@ -379,27 +406,46 @@ def run_prepared_pipeline(
         "bbox_max_order",
         lambda: functions["bbox"](voxel, case.max_order, sphere),
     )
-    scaled, raw = execute(
-        "bbox_to_zm",
-        lambda: functions["bbox_to_zm"](
+    def bbox_to_zm():
+        if context.bbox_to_zm_cache is not None:
+            return functions["bbox_to_zm_cached"](
+                bbox_order_n, context.bbox_to_zm_cache
+            )
+        return functions["bbox_to_zm"](
             case.max_order,
             cache["GCache_complex"],
             cache["GCache_pqr_linear"],
             cache["GCache_complex_index"],
             cache["CLMCache3D"],
             bbox_order_n,
-        ),
-    )
+        )
+
+    scaled, raw = execute("bbox_to_zm", bbox_to_zm)
     descriptor_value = execute(
         "descriptor", lambda: functions["descriptor"](np.asarray(scaled).copy())
     )
 
     def build_candidates():
-        ab_function = functions["ab_all"] if all_candidates else functions["ab"]
         candidates: dict[int, list[np.ndarray]] = {}
         for order in normalization_orders:
-            value = ab_function(raw, order)
-            candidates[order] = list(value) if all_candidates else [np.asarray(value)]
+            if "ab_fixed" in functions:
+                fixed_function = (
+                    functions["ab_all_fixed"] if all_candidates else functions["ab_fixed"]
+                )
+                fixed = fixed_function(raw, order)
+                pairs = np.asarray(fixed.pairs)
+                is_valid = np.asarray(fixed.is_valid)
+                candidates[order] = (
+                    [pairs[index][is_valid[index]] for index in range(pairs.shape[0])]
+                    if all_candidates
+                    else [pairs[is_valid]]
+                )
+            else:
+                ab_function = functions["ab_all"] if all_candidates else functions["ab"]
+                value = ab_function(raw, order)
+                candidates[order] = (
+                    list(value) if all_candidates else [np.asarray(value)]
+                )
         return candidates, _canonical_candidate_batch(candidates)
 
     candidates, candidate_batch = execute("ab_candidates", build_candidates)

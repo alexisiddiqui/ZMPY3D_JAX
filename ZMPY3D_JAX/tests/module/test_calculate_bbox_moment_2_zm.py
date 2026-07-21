@@ -144,6 +144,43 @@ class TestCalculateBBoxMoment2ZM:
         np.testing.assert_array_equal(zm_scaled_1, zm_scaled_2)
         np.testing.assert_array_equal(zm_raw_1, zm_raw_2)
 
+    def test_prepared_cache_matches_legacy_api(self, bbox_moment, cache_data):
+        """Prepared device constants preserve the compatibility wrapper results."""
+        cache = z.prepare_bbox_to_zm_cache(
+            cache_data["max_order"],
+            cache_data["GCache_complex"],
+            cache_data["GCache_pqr_linear"],
+            cache_data["GCache_complex_index"],
+            cache_data["CLMCache3D"],
+        )
+        actual_scaled, actual_raw = z.calculate_bbox_moment_2_zm_cached(
+            bbox_moment, cache
+        )
+        expected_scaled, expected_raw = z.calculate_bbox_moment_2_zm(
+            cache_data["max_order"],
+            cache_data["GCache_complex"],
+            cache_data["GCache_pqr_linear"],
+            cache_data["GCache_complex_index"],
+            cache_data["CLMCache3D"],
+            bbox_moment,
+        )
+
+        assert isinstance(cache, z.BBoxToZMCache)
+        assert cache.max_order == cache_data["max_order"]
+        assert cache.g_coefficients.dtype.name == "complex128"
+        assert cache.pqr_indices.dtype.name == "int32"
+        assert cache.output_indices.dtype.name == "int32"
+        np.testing.assert_array_equal(
+            cache.pqr_indices,
+            np.asarray(cache_data["GCache_pqr_linear"]).reshape(-1) - 1,
+        )
+        np.testing.assert_array_equal(
+            cache.output_indices,
+            np.asarray(cache_data["GCache_complex_index"]).reshape(-1) - 1,
+        )
+        np.testing.assert_array_equal(actual_scaled, expected_scaled)
+        np.testing.assert_array_equal(actual_raw, expected_raw)
+
     def test_complex_moment(self, cache_data):
         """Test with complex-valued bounding box moment."""
         max_order = cache_data["max_order"]

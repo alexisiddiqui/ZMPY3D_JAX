@@ -8,11 +8,11 @@
 
 import chex
 import jax.numpy as jnp
+import numpy as np
 
 from ZMPY3D_JAX import config as _config
 
-from .calculate_ab_candidates_jax import compute_ab_candidates_jax
-from .eigen_root import eigen_root
+from .calculate_ab_candidates_jax import calculate_ab_rotation_candidates
 
 
 def calculate_ab_rotation_02(
@@ -74,42 +74,10 @@ def calculate_ab_rotation_02(
         - The method preserves all information while achieving rotation invariance
     """
 
-    ind_real = 2
-
-    # Ensure JAX arrays and complex dtype
-    z_moment_raw = jnp.asarray(z_moment_raw, dtype=_config.COMPLEX_DTYPE)
-
-    # Step 1: Compute abconj_sol (differs by parity) using batched eigen solver
-    if target_order2_norm_rotate % 2 == 0:
-        abconj_coef = jnp.array(
-            [
-                z_moment_raw[target_order2_norm_rotate, 2, 2],
-                -z_moment_raw[target_order2_norm_rotate, 2, 1],
-                z_moment_raw[target_order2_norm_rotate, 2, 0],
-                jnp.conj(z_moment_raw[target_order2_norm_rotate, 2, 1]),
-                jnp.conj(z_moment_raw[target_order2_norm_rotate, 2, 2]),
-            ],
-            dtype=_config.COMPLEX_DTYPE,
-        )
-    else:
-        abconj_coef = jnp.array(
-            [
-                z_moment_raw[target_order2_norm_rotate, 1, 1],
-                -z_moment_raw[target_order2_norm_rotate, 1, 0],
-                -jnp.conj(z_moment_raw[target_order2_norm_rotate, 1, 1]),
-            ],
-            dtype=_config.COMPLEX_DTYPE,
-        )
-
-    abconj_sol = eigen_root(abconj_coef)
-
-    # Step 2: Compute a/b candidates (using JAX implementation)
-    a, b, is_valid = compute_ab_candidates_jax(z_moment_raw, abconj_sol, ind_real)
-
-    # Step 3: Filter and return (all JAX arrays)
-    a_flat = a[is_valid]
-    b_flat = b[is_valid]
-
-    if a_flat.size == 0:
-        return jnp.zeros((0, 2), dtype=_config.COMPLEX_DTYPE)
-    return jnp.stack([a_flat, b_flat], axis=1)
+    candidates = calculate_ab_rotation_candidates(
+        z_moment_raw, target_order2_norm_rotate
+    )
+    pairs = np.asarray(candidates.pairs)
+    is_valid = np.asarray(candidates.is_valid)
+    compact = pairs[is_valid]
+    return jnp.asarray(compact, dtype=_config.COMPLEX_DTYPE).reshape((-1, 2))

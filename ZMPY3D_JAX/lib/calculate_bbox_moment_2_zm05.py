@@ -1,15 +1,78 @@
-# Array reshaping and transposing are directly supported by `jax.numpy`.
-# Element-wise complex multiplication and array indexing are JAX-compatible.
-# The `np.add.at` operation is replaced with JAX's .at[].add() for immutable updates.
-# Conditional assignment for NaNs is handled with `jax.numpy.where`.
-# All numerical operations are directly supported by `jax.numpy`.
-
-from typing import Tuple
+from functools import partial
+from typing import NamedTuple, Tuple
 
 import chex
+import jax
 import jax.numpy as jnp
 
 import ZMPY3D_JAX.config as _config
+
+
+class BBoxToZMCache(NamedTuple):
+    """Device-resident constants used by bbox-to-Zernike conversion."""
+
+    max_order: int
+    g_coefficients: chex.Array
+    pqr_indices: chex.Array
+    output_indices: chex.Array
+    clm: chex.Array
+
+
+def prepare_bbox_to_zm_cache(
+    max_order: int,
+    g_cache_complex: chex.Array,
+    g_cache_pqr_linear: chex.Array,
+    g_cache_complex_index: chex.Array,
+    clm_cache3d: chex.Array,
+) -> BBoxToZMCache:
+    """Materialize and normalize static bbox-to-ZM data once."""
+    return BBoxToZMCache(
+        max_order=int(max_order),
+        g_coefficients=jnp.asarray(
+            g_cache_complex, dtype=_config.COMPLEX_DTYPE
+        ).reshape(-1),
+        pqr_indices=jnp.asarray(g_cache_pqr_linear, dtype=jnp.int32).reshape(-1) - 1,
+        output_indices=jnp.asarray(g_cache_complex_index, dtype=jnp.int32).reshape(-1) - 1,
+        clm=jnp.asarray(clm_cache3d, dtype=_config.COMPLEX_DTYPE),
+    )
+
+
+@partial(jax.jit, static_argnums=(0,))
+def _calculate_bbox_moment_2_zm_jax(
+    max_order: int,
+    g_coefficients: chex.Array,
+    pqr_indices: chex.Array,
+    output_indices: chex.Array,
+    clm: chex.Array,
+    bbox_moment: chex.Array,
+) -> Tuple[chex.Array, chex.Array]:
+    """Convert bbox moments using prepared device arrays."""
+    max_n = max_order + 1
+    bbox_flat = jnp.transpose(bbox_moment, (2, 1, 0)).reshape(-1)
+    contributions = g_coefficients * bbox_flat[pqr_indices]
+    summed = jnp.zeros(max_n**3, dtype=bbox_moment.dtype)
+    summed = summed.at[output_indices].add(contributions)
+    nan_value = jnp.asarray(jnp.nan + 0j, dtype=bbox_moment.dtype)
+    summed = jnp.where(summed == 0.0, nan_value, summed)
+
+    z_moment_raw = summed * (3.0 / (4.0 * jnp.pi))
+    z_moment_raw = jnp.transpose(z_moment_raw.reshape((max_n, max_n, max_n)), (2, 1, 0))
+    z_moment_scaled = z_moment_raw * clm
+    return z_moment_scaled, z_moment_raw
+
+
+def calculate_bbox_moment_2_zm_cached(
+    bbox_moment: chex.Array, cache: BBoxToZMCache
+) -> Tuple[chex.Array, chex.Array]:
+    """Convert bbox moments with a reusable prepared cache."""
+    return _calculate_bbox_moment_2_zm_jax(
+        cache.max_order,
+        cache.g_coefficients,
+        cache.pqr_indices,
+        cache.output_indices,
+        cache.clm,
+        jnp.asarray(bbox_moment, dtype=_config.COMPLEX_DTYPE),
+    )
 
 
 def calculate_bbox_moment_2_zm05(
@@ -20,48 +83,12 @@ def calculate_bbox_moment_2_zm05(
     clm_cache3d: chex.Array,
     bbox_moment: chex.Array,
 ) -> Tuple[chex.Array, chex.Array]:
-    """Converts raw bounding box moments into Zernike moments (both raw and scaled).
-    This is a core step in the Zernike moment calculation pipeline.
-
-    Args:
-        max_order (int): The maximum order of Zernike moments.
-        g_cache_complex (chex.Array): A JAX array of complex coefficients from the G-cache.
-        g_cache_pqr_linear (chex.Array): A JAX array of linear indices for p, q, r from the G-cache.
-        g_cache_complex_index (chex.Array): A JAX array of indices for complex coefficients from the G-cache.
-        clm_cache3d (chex.Array): A 3D JAX array of CLM coefficients for scaling.
-        bbox_moment (chex.Array): A 3D JAX array of raw bounding box moments.
-
-    Returns:
-        tuple: A tuple containing:
-            - z_moment_scaled (chex.Array): A 3D JAX array of scaled Zernike moments.
-            - z_moment_raw (chex.Array): A 3D JAX array of raw Zernike moments.
-    """
-
-    g_cache_complex = jnp.asarray(g_cache_complex, dtype=_config.COMPLEX_DTYPE)
-    g_cache_pqr_linear = jnp.asarray(g_cache_pqr_linear, dtype=jnp.int32)
-    g_cache_complex_index = jnp.asarray(g_cache_complex_index, dtype=jnp.int32)
-    clm_cache3d = jnp.asarray(clm_cache3d, dtype=_config.COMPLEX_DTYPE)
-    bbox_moment = jnp.asarray(bbox_moment, dtype=_config.COMPLEX_DTYPE)
-
-    max_n = max_order + 1
-
-    bbox_moment = jnp.reshape(jnp.transpose(bbox_moment, (2, 1, 0)), -1)
-
-    zm_geo = g_cache_complex * bbox_moment[g_cache_pqr_linear - 1]
-
-    zm_geo_sum = jnp.zeros(max_n * max_n * max_n, dtype=_config.COMPLEX_DTYPE)
-
-    # JAX immutable update: use .at[].add() instead of np.add.at
-    zm_geo_sum = zm_geo_sum.at[g_cache_complex_index - 1].add(zm_geo)
-
-    # Use jnp.where for conditional NaN assignment
-    zm_geo_sum = jnp.where(zm_geo_sum == 0.0, jnp.nan + 0j, zm_geo_sum)
-
-    z_moment_raw = zm_geo_sum * (3.0 / (4.0 * jnp.pi))
-    z_moment_raw = z_moment_raw.reshape((max_n, max_n, max_n))
-    z_moment_raw = jnp.transpose(z_moment_raw, (2, 1, 0))
-    z_moment_scaled = (
-        z_moment_raw * clm_cache3d
-    )  # CLMCache3D is a 3D matrix, so operations are direct
-
-    return z_moment_scaled, z_moment_raw
+    """Convert bbox moments while preserving the original public signature."""
+    cache = prepare_bbox_to_zm_cache(
+        max_order,
+        g_cache_complex,
+        g_cache_pqr_linear,
+        g_cache_complex_index,
+        clm_cache3d,
+    )
+    return calculate_bbox_moment_2_zm_cached(bbox_moment, cache)
