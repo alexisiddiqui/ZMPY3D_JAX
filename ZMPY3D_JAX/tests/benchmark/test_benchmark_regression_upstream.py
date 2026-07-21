@@ -1,4 +1,4 @@
-"""CPU latency and stage profiling against the original NumPy pipeline."""
+"""JAX backend latency and stage profiling against the original NumPy pipeline."""
 
 from __future__ import annotations
 
@@ -19,7 +19,10 @@ import pytest
 
 import ZMPY3D_JAX as z
 
-z.configure_for_scientific_computing(enable_x64=True, platform="cpu")
+BENCHMARK_BACKEND = os.getenv("ZMPY3D_BENCHMARK_BACKEND", "cpu").lower()
+if BENCHMARK_BACKEND not in {"cpu", "gpu"}:
+    raise ValueError("ZMPY3D_BENCHMARK_BACKEND must be 'cpu' or 'gpu'")
+z.configure_for_scientific_computing(enable_x64=True, platform=BENCHMARK_BACKEND)
 
 from ZMPY3D_JAX.tests.utils.upstream_regression import (
     REPO_ROOT,
@@ -121,6 +124,31 @@ def _time_ratios(jax_seconds: float, upstream_seconds: float) -> dict[str, float
     }
 
 
+def _assert_timed_result_parity(jax_result: dict[str, Any], upstream_result: dict[str, Any]) -> None:
+    """Protect backend timing runs from benchmarking numerically invalid output."""
+    for name, rtol, atol in (
+        ("raw", 1e-3, 3e-4),
+        ("scaled", 1e-3, 3e-4),
+        ("descriptor", 5e-5, 5e-6),
+    ):
+        np.testing.assert_allclose(
+            np.asarray(jax_result[name]),
+            np.asarray(upstream_result[name]),
+            rtol=rtol,
+            atol=atol,
+            equal_nan=True,
+        )
+    assert len(jax_result["rotated"]) == len(upstream_result["rotated"])
+    for actual, expected in zip(jax_result["rotated"], upstream_result["rotated"]):
+        np.testing.assert_allclose(
+            np.asarray(actual),
+            np.asarray(expected),
+            rtol=1e-3,
+            atol=3e-4,
+            equal_nan=True,
+        )
+
+
 def _summarize_stages(
     samples: dict[str, list[float]],
 ) -> dict[str, dict[str, float | list[float]]]:
@@ -187,7 +215,9 @@ def _output_path() -> Path:
     )
     output_dir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S_%fZ")
-    return output_dir / f"upstream_regression_benchmark_{timestamp}.json"
+    return output_dir / (
+        f"upstream_regression_benchmark_{BENCHMARK_BACKEND}_{timestamp}.json"
+    )
 
 
 def _validate_payload(payload: dict[str, Any]) -> None:
@@ -251,8 +281,8 @@ def test_bottleneck_ranking_uses_positive_median_excess() -> None:
 
 @pytest.mark.filterwarnings("ignore:numpy.fix is deprecated:DeprecationWarning")
 def test_regression_runtime_snapshot() -> None:
-    """Record setup, first-execution, warmed latency, and stage-level CPU timings."""
-    assert jax.default_backend() == "cpu"
+    """Record setup, first-execution, warmed latency, and synchronized stage timings."""
+    assert jax.default_backend() == BENCHMARK_BACKEND
     repeats = _positive_env_int("ZMPY3D_REGRESSION_REPEATS", 3)
     sample_count = _positive_env_int("ZMPY3D_REGRESSION_SAMPLES", 7)
 
@@ -297,10 +327,7 @@ def test_regression_runtime_snapshot() -> None:
     jax.clear_caches()
     jax_first_result, jax_first_seconds = _time_call(run_jax)
     upstream_first_result, upstream_first_seconds = _time_call(run_upstream)
-    assert np.asarray(jax_first_result["descriptor"]).shape == np.asarray(
-        upstream_first_result["descriptor"]
-    ).shape
-    assert len(jax_first_result["rotated"]) == len(upstream_first_result["rotated"])
+    _assert_timed_result_parity(jax_first_result, upstream_first_result)
 
     # Additional untimed calls establish a common warmed state before sampling.
     run_jax()
@@ -353,6 +380,7 @@ def test_regression_runtime_snapshot() -> None:
             "samples": sample_count,
             "repeats_per_sample": repeats,
             "jax_x64_enabled": bool(jax.config.x64_enabled),
+            "jax_requested_backend": BENCHMARK_BACKEND,
             "jax_rotation_representation": "prepared_device_cache_and_batched_output",
             "preprocessing_representation": "numpy_parser_and_residue_cache_to_jax_voxel",
             "radius_sphere_representation": "fused_fixed_shape_jax_reduction",
@@ -404,7 +432,8 @@ def test_regression_runtime_snapshot() -> None:
     output_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     logging.info("Upstream regression benchmark saved to: %s", output_path)
     logging.info(
-        "Top CPU bottleneck: %s (%.3f ms median excess, %.1f%% of positive excess)",
+        "Top %s bottleneck: %s (%.3f ms median excess, %.1f%% of positive excess)",
+        BENCHMARK_BACKEND.upper(),
         ranking[0]["stage"],
         1000 * float(ranking[0]["median_excess_seconds"]),
         float(ranking[0]["positive_excess_contribution_percent"]),

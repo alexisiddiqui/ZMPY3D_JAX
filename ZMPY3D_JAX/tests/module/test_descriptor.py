@@ -1,7 +1,15 @@
 import numpy as np
+import jax
+import jax.numpy as jnp
 
 import ZMPY3D_JAX.config as _config
 from ZMPY3D_JAX.lib.get_3dzd_121_descriptor02 import get_3dzd_121_descriptor02
+from ZMPY3D_JAX.lib.descriptor_assembly import (
+    DescriptorVector,
+    assemble_descriptor_vector,
+    prepare_descriptor_assembly_cache,
+)
+from ZMPY3D_JAX.lib.shape_score import calculate_shape_scores
 
 _config.configure_for_scientific_computing()
 
@@ -131,3 +139,62 @@ class TestGet3DZD121Descriptor02:
 
         # Input should remain unchanged
         np.testing.assert_array_equal(z_moment_scaled, original)
+
+
+def test_descriptor_assembly_structural_counts():
+    order6 = prepare_descriptor_assembly_cache(6)
+    order20 = prepare_descriptor_assembly_cache(20)
+    assert order6.descriptor_indices.shape == (16,)
+    assert order6.moment_indices.shape == (50,)
+    assert order20.descriptor_indices.shape == (121,)
+    assert order20.moment_indices.shape == (946,)
+    assert order6.descriptor_indices.dtype == jnp.int32
+    assert order6.moment_indices.dtype == jnp.int32
+
+
+def test_descriptor_assembly_is_fixed_shape_and_jittable():
+    cache = prepare_descriptor_assembly_cache(6)
+    descriptor = jnp.full((7, 7), 2.0)
+    means = jnp.full((4, 7, 7, 7), 3.0)
+
+    result = jax.jit(lambda d, m, c: assemble_descriptor_vector(d, m, c))(
+        descriptor, means, cache
+    )
+
+    assert isinstance(result, DescriptorVector)
+    assert result.values.shape == (216,)
+    assert result.is_valid.shape == (216,)
+    assert result.is_valid.dtype == jnp.bool_
+    np.testing.assert_array_equal(np.asarray(result.is_valid), True)
+    np.testing.assert_array_equal(np.asarray(result.values[:16]), 2.0)
+    np.testing.assert_array_equal(np.asarray(result.values[16:]), 3.0)
+
+
+def test_descriptor_assembly_preserves_degenerate_slots_with_mask():
+    cache = prepare_descriptor_assembly_cache(6)
+    descriptor = get_3dzd_121_descriptor02(jnp.zeros((7, 7, 7)))
+    result = assemble_descriptor_vector(
+        descriptor, jnp.empty((0, 7, 7, 7)), cache
+    )
+
+    assert result.values.shape == (16,)
+    assert not bool(jnp.any(result.is_valid))
+    assert bool(jnp.all(jnp.isnan(result.values)))
+
+
+def test_shape_score_returns_nan_when_a_weighted_slot_is_invalid():
+    descriptor = DescriptorVector(
+        values=jnp.array([1.0, jnp.nan]),
+        is_valid=jnp.array([True, False]),
+    )
+    geo, zm = calculate_shape_scores(
+        descriptor,
+        descriptor,
+        jnp.ones(2),
+        jnp.ones(2),
+        jnp.array([1]),
+        jnp.array([1.0]),
+        jnp.ones((2, 1)),
+    )
+    np.testing.assert_allclose(geo, 100.0)
+    assert bool(jnp.isnan(zm))

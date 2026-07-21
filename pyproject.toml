@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ZMPY3D_JAX"
-version = "0.0.2"
+version = "0.0.3"
 description = "JAX-oriented fork of ZMPY3D for 3D Zernike moments in structural biology workflows"
 readme = "README.md"
 requires-python = ">=3.11.6"

@@ -27,14 +27,16 @@ import pickle
 import sys
 from typing import Tuple
 
+import jax.numpy as jnp
 import numpy as np
 
 import ZMPY3D_JAX as z
+from ZMPY3D_JAX.lib.shape_score import calculate_shape_scores
 
 
 def ZMPY3D_CLI_ShapeScore(
     PDBFileNameA: str, PDBFileNameB: str, GridWidth: float
-) -> Tuple[float, float]:
+) -> Tuple[jnp.ndarray, jnp.ndarray]:
     """
     Calculate shape similarity scores between two PDB structures.
 
@@ -55,10 +57,10 @@ def ZMPY3D_CLI_ShapeScore(
 
     Returns
     -------
-    tuple of (float, float)
-        GeoScoreScaled : float
+    tuple of (jax.Array, jax.Array)
+        GeoScoreScaled : jax.Array
             Scaled geometric similarity score (0-100), where 100 indicates identical geometry.
-        ZMScoreScaled : float
+        ZMScoreScaled : jax.Array
             Scaled Zernike moment similarity score (0-100), where 100 indicates identical shape.
 
     Notes
@@ -91,7 +93,7 @@ def ZMPY3D_CLI_ShapeScore(
         Param: dict,
         ResidueBox: dict,
         RotationIndex: dict,
-    ) -> Tuple[np.ndarray, np.ndarray]:
+    ) -> Tuple[z.DescriptorVector, jnp.ndarray]:
         [XYZ, AA_NameList] = z.get_pdb_xyz_ca(PDBFileName)
 
         [Voxel3D, Corner] = z.fill_voxel_by_weight_density(
@@ -147,16 +149,22 @@ def ZMPY3D_CLI_ShapeScore(
         ZMList_5 = z.calculate_zm_by_ab_rotation_batch(ZMoment_raw, ABList_5, RotationCache)
         [ZM_5, _] = z.get_mean_invariant(ZMList_5)
 
-        MomentInvariant = np.concatenate(
-            [z[~np.isnan(z)] for z in [ZM_3DZD_invariant, ZM_2, ZM_3, ZM_4, ZM_5]]
+        MomentInvariant = z.assemble_descriptor_vector(
+            ZM_3DZD_invariant,
+            jnp.stack((ZM_2, ZM_3, ZM_4, ZM_5)),
+            DescriptorCache,
         )
 
         TotalResidueWeight = z.get_total_residue_weight(AA_NameList, Param["residue_weight_map"])
 
         [Prctile_list, STD_XYZ_dist2center, S, K] = z.get_ca_distance_info(XYZ)
 
-        GeoDescriptor = np.vstack(
-            (AverageVoxelDist2Center, TotalResidueWeight, Prctile_list, STD_XYZ_dist2center, S, K)
+        GeoDescriptor = jnp.concatenate(
+            (
+                jnp.asarray([AverageVoxelDist2Center, TotalResidueWeight]),
+                jnp.asarray(Prctile_list).reshape(-1),
+                jnp.asarray([STD_XYZ_dist2center, S, K]),
+            )
         )
 
         return MomentInvariant, GeoDescriptor
@@ -209,6 +217,7 @@ def ZMPY3D_CLI_ShapeScore(
     BBoxToZMCache = z.prepare_bbox_to_zm_cache(
         MaxOrder, GCache_complex, GCache_pqr_linear, GCache_complex_index, CLMCache3D
     )
+    DescriptorCache = z.prepare_descriptor_assembly_cache(MaxOrder)
 
     MaxN = MaxOrder + 1
 
@@ -245,34 +254,22 @@ def ZMPY3D_CLI_ShapeScore(
 
     P = z.get_descriptor_property()
 
-    ZMIndex = np.concatenate(
+    ZMIndex = jnp.concatenate(
         (P["ZMIndex0"], P["ZMIndex1"], P["ZMIndex2"], P["ZMIndex3"], P["ZMIndex4"])
-    )
-    ZMWeight = np.concatenate(
+    ).reshape(-1)
+    ZMWeight = jnp.concatenate(
         (P["ZMWeight0"], P["ZMWeight1"], P["ZMWeight2"], P["ZMWeight3"], P["ZMWeight4"])
+    ).reshape(-1)
+
+    return calculate_shape_scores(
+        MomentInvariantRawA,
+        MomentInvariantRawB,
+        GeoDescriptorA,
+        GeoDescriptorB,
+        ZMIndex,
+        ZMWeight,
+        P["GeoWeight"],
     )
-
-    # Calculating ZMScore
-    ZMScore = np.sum(np.abs(MomentInvariantRawA[ZMIndex] - MomentInvariantRawB[ZMIndex]) * ZMWeight)
-
-    # Calculating GeoScore
-    GeoScore = np.sum(
-        P["GeoWeight"]
-        * (
-            2
-            * np.abs(GeoDescriptorA - GeoDescriptorB)
-            / (1 + np.abs(GeoDescriptorA) + np.abs(GeoDescriptorB))
-        )
-    )
-
-    # Calculating paper loss
-    Paper_Loss = ZMScore + GeoScore
-
-    # Scaled scores, fitted to shape service
-    GeoScoreScaled = (6.6 - GeoScore) / 6.6 * 100.0
-    ZMScoreScaled = (9.0 - ZMScore) / 9.0 * 100.0
-
-    return GeoScoreScaled, ZMScoreScaled
 
 
 def main() -> None:

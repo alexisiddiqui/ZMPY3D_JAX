@@ -49,6 +49,12 @@ from .lib.calculate_zm_by_ab_rotation01 import (
     prepare_zm_rotation_cache as prepare_zm_rotation_cache,
 )
 from .lib.eigen_root import eigen_root as eigen_root
+from .lib.descriptor_assembly import (
+    DescriptorAssemblyCache as DescriptorAssemblyCache,
+    DescriptorVector as DescriptorVector,
+    assemble_descriptor_vector as assemble_descriptor_vector,
+    prepare_descriptor_assembly_cache as prepare_descriptor_assembly_cache,
+)
 from .lib.fill_voxel_by_weight_density04 import (
     fill_voxel_by_weight_density04 as fill_voxel_by_weight_density,
 )

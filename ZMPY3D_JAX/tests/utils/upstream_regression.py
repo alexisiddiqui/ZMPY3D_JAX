@@ -421,8 +421,13 @@ def run_prepared_pipeline(
         )
 
     scaled, raw = execute("bbox_to_zm", bbox_to_zm)
+    descriptor_input = (
+        scaled
+        if context.implementation == "jax"
+        else np.asarray(scaled).copy()
+    )
     descriptor_value = execute(
-        "descriptor", lambda: functions["descriptor"](np.asarray(scaled).copy())
+        "descriptor", lambda: functions["descriptor"](descriptor_input)
     )
 
     def build_candidates():

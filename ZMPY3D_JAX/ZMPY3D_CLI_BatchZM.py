@@ -24,12 +24,127 @@
 import argparse
 import os
 import pickle
-import sys
-from typing import List, Sequence
+from typing import Any, NamedTuple, Sequence
 
+import jax.numpy as jnp
 import numpy as np
 
 import ZMPY3D_JAX as z
+from ZMPY3D_JAX.lib.batched_descriptor import (
+    calculate_descriptor_batch_from_voxels,
+    pad_voxel_batch,
+)
+from ZMPY3D_JAX.lib.fill_voxel_by_weight_density04 import (
+    fill_voxel_by_weight_density_host,
+)
+
+
+class _BatchZMRuntime(NamedTuple):
+    param: dict[str, Any]
+    residue_box: dict[float, Any]
+    rotation_cache: z.ZMRotationCache
+    bbox_to_zm_cache: z.BBoxToZMCache
+    descriptor_cache: z.DescriptorAssemblyCache
+
+
+def _prepare_batch_runtime(grid_width: float, max_order: int) -> _BatchZMRuntime:
+    param = z.get_global_parameter()
+    cache_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cache_data")
+    with open(os.path.join(cache_dir, "BinomialCache.pkl"), "rb") as file:
+        binomial_cache = pickle.load(file)["BinomialCache"]
+    with open(
+        os.path.join(cache_dir, f"LogG_CLMCache_MaxOrder{max_order:02d}.pkl"), "rb"
+    ) as file:
+        cache = pickle.load(file)
+
+    rotation_index = cache["RotationIndex"]
+    rotation_cache = z.prepare_zm_rotation_cache(
+        binomial_cache,
+        max_order,
+        cache["CLMCache"],
+        np.squeeze(rotation_index["s_id"][0, 0]) - 1,
+        np.squeeze(rotation_index["n"][0, 0]),
+        np.squeeze(rotation_index["l"][0, 0]),
+        np.squeeze(rotation_index["m"][0, 0]),
+        np.squeeze(rotation_index["mu"][0, 0]),
+        np.squeeze(rotation_index["k"][0, 0]),
+        np.squeeze(rotation_index["IsNLM_Value"][0, 0]) - 1,
+    )
+    bbox_to_zm_cache = z.prepare_bbox_to_zm_cache(
+        max_order,
+        cache["GCache_complex"],
+        cache["GCache_pqr_linear"],
+        cache["GCache_complex_index"],
+        cache["CLMCache3D"],
+    )
+    return _BatchZMRuntime(
+        param=param,
+        residue_box=z.get_residue_gaussian_density_cache(param),
+        rotation_cache=rotation_cache,
+        bbox_to_zm_cache=bbox_to_zm_cache,
+        descriptor_cache=z.prepare_descriptor_assembly_cache(max_order),
+    )
+
+
+def _descriptor_width(
+    mode: int, max_target_order: int, cache: z.DescriptorAssemblyCache
+) -> int:
+    mean_block_count = max_target_order - 1 if mode in (0, 2) else 0
+    width = mean_block_count * int(cache.moment_indices.shape[0])
+    if mode in (1, 2):
+        width += int(cache.descriptor_indices.shape[0])
+    return width
+
+
+def _run_prepared_batch(
+    paths: Sequence[str],
+    *,
+    grid_width: float,
+    max_order: int,
+    max_target_order: int,
+    mode: int,
+    batch_size: int,
+    runtime: _BatchZMRuntime,
+) -> z.DescriptorVector:
+    if not paths:
+        width = _descriptor_width(mode, max_target_order, runtime.descriptor_cache)
+        return z.DescriptorVector(
+            values=jnp.empty((0, width), dtype=z.FLOAT_DTYPE),
+            is_valid=jnp.empty((0, width), dtype=bool),
+        )
+
+    chunks: list[z.DescriptorVector] = []
+    for start in range(0, len(paths), batch_size):
+        host_voxels = []
+        for path in paths[start : start + batch_size]:
+            xyz, residues = z.get_pdb_xyz_ca(path)
+            voxel, _corner = fill_voxel_by_weight_density_host(
+                xyz,
+                residues,
+                runtime.param["residue_weight_map"],
+                grid_width,
+                runtime.residue_box[grid_width],
+            )
+            host_voxels.append(voxel)
+
+        voxel_batch = jnp.asarray(pad_voxel_batch(host_voxels), dtype=z.FLOAT_DTYPE)
+        chunks.append(
+            calculate_descriptor_batch_from_voxels(
+                voxel_batch,
+                max_order=max_order,
+                max_target_order=max_target_order,
+                mode=mode,
+                default_radius_multiplier=runtime.param["default_radius_multiplier"],
+                bbox_to_zm_cache=runtime.bbox_to_zm_cache,
+                rotation_cache=runtime.rotation_cache,
+                descriptor_cache=runtime.descriptor_cache,
+            )
+        )
+
+    return z.DescriptorVector(
+        values=jnp.concatenate([chunk.values for chunk in chunks], axis=0),
+        is_valid=jnp.concatenate([chunk.is_valid for chunk in chunks], axis=0),
+    )
 
 
 def ZMPY3D_CLI_BatchZM(
@@ -38,7 +153,8 @@ def ZMPY3D_CLI_BatchZM(
     MaxOrder: int = 6,
     MaxTargetOrder2NormRotate: int = 5,
     Mode: int = 0,
-) -> List[np.ndarray]:
+    BatchSize: int = 16,
+) -> z.DescriptorVector:
     """
     Calculate 3D Zernike moments for a batch of PDB structures.
 
@@ -62,12 +178,13 @@ def ZMPY3D_CLI_BatchZM(
         - 1: 3DZD 121 invariant descriptor only
         - 2: Both Canterakis normalization and 3DZD 121 invariant
         Default is 0.
+    BatchSize : int, optional
+        Maximum number of structures padded and processed together. Default is 16.
 
     Returns
     -------
-    list of numpy.ndarray
-        List containing Zernike moment descriptor arrays for each input structure.
-        Each array contains concatenated descriptors with NaN values removed.
+    DescriptorVector
+        Stacked JAX descriptor values and masks with shape ``(batch, width)``.
 
     Notes
     -----
@@ -80,119 +197,25 @@ def ZMPY3D_CLI_BatchZM(
     --------
     >>> pdb_files = ['protein1.pdb', 'protein2.pdb', 'protein3.pdb']
     >>> descriptors = ZMPY3D_CLI_BatchZM(pdb_files, GridWidth=1.0, MaxOrder=20, Mode=2)
-    >>> print(f"Computed {len(descriptors)} descriptors")
+    >>> print(f"Computed {descriptors.values.shape[0]} descriptors")
     """
-    Param = z.get_global_parameter()
+    if Mode not in (0, 1, 2):
+        raise ValueError("Mode must be 0, 1, or 2")
+    if MaxTargetOrder2NormRotate < 2 or MaxTargetOrder2NormRotate > MaxOrder:
+        raise ValueError("MaxTargetOrder2NormRotate must be between 2 and MaxOrder")
+    if isinstance(BatchSize, bool) or not isinstance(BatchSize, int) or BatchSize <= 0:
+        raise ValueError("BatchSize must be a positive integer")
 
-    BinomialCacheFilePath = os.path.join(
-        os.path.join(os.path.dirname(os.path.abspath(__file__)), "cache_data"), "BinomialCache.pkl"
+    runtime = _prepare_batch_runtime(GridWidth, MaxOrder)
+    return _run_prepared_batch(
+        PDBFileName,
+        grid_width=GridWidth,
+        max_order=MaxOrder,
+        max_target_order=MaxTargetOrder2NormRotate,
+        mode=Mode,
+        batch_size=BatchSize,
+        runtime=runtime,
     )
-    with open(
-        BinomialCacheFilePath, "rb"
-    ) as file:  # Used at the entry point, it requires __file__ to identify the package location
-        # with open('./cache_data/BinomialCache.pkl', 'rb') as file: # Can be used in ipynb, but not at the entry point.
-        BinomialCachePKL = pickle.load(file)
-
-    LogCacheFilePath = os.path.join(
-        os.path.join(os.path.dirname(os.path.abspath(__file__)), "cache_data"),
-        "LogG_CLMCache_MaxOrder{:02d}.pkl".format(MaxOrder),
-    )
-    with open(
-        LogCacheFilePath, "rb"
-    ) as file:  # Used at the entry point, it requires __file__ to identify the package location
-        # with open('./cache_data/LogG_CLMCache_MaxOrder{:02d}.pkl'.format(MaxOrder), 'rb') as file: # Can be used in ipynb, but not at the entry point.
-        CachePKL = pickle.load(file)
-
-    # Extract all cached variables from pickle. These will be converted into a tensor/cupy objects for ZMPY3D_CP and ZMPY3D_TF.
-    BinomialCache = BinomialCachePKL["BinomialCache"]
-
-    # GCache, CLMCache, and all RotationIndex
-    GCache_pqr_linear = CachePKL["GCache_pqr_linear"]
-    GCache_complex = CachePKL["GCache_complex"]
-    GCache_complex_index = CachePKL["GCache_complex_index"]
-    CLMCache3D = CachePKL["CLMCache3D"]
-    CLMCache = CachePKL["CLMCache"]
-    RotationIndex = CachePKL["RotationIndex"]
-
-    # RotationIndex is a structure, must be [0,0] to accurately obtain the s_id ... etc, within RotationIndex.
-    s_id = np.squeeze(RotationIndex["s_id"][0, 0]) - 1
-    n = np.squeeze(RotationIndex["n"][0, 0])
-    l = np.squeeze(RotationIndex["l"][0, 0])
-    m = np.squeeze(RotationIndex["m"][0, 0])
-    mu = np.squeeze(RotationIndex["mu"][0, 0])
-    k = np.squeeze(RotationIndex["k"][0, 0])
-    IsNLM_Value = np.squeeze(RotationIndex["IsNLM_Value"][0, 0]) - 1
-    RotationCache = z.prepare_zm_rotation_cache(
-        BinomialCache, MaxOrder, CLMCache, s_id, n, l, m, mu, k, IsNLM_Value
-    )
-    BBoxToZMCache = z.prepare_bbox_to_zm_cache(
-        MaxOrder, GCache_complex, GCache_pqr_linear, GCache_complex_index, CLMCache3D
-    )
-
-    ResidueBox = z.get_residue_gaussian_density_cache(Param)
-
-    def core(PDBFileName: str, Mode: int) -> np.ndarray:
-        [XYZ, AA_NameList] = z.get_pdb_xyz_ca(PDBFileName)
-
-        [Voxel3D, Corner] = z.fill_voxel_by_weight_density(
-            XYZ, AA_NameList, Param["residue_weight_map"], GridWidth, ResidueBox[GridWidth]
-        )
-        Dimension_BBox_scaled = Voxel3D.shape
-
-        XYZ_SampleStruct = {
-            "X_sample": np.arange(Dimension_BBox_scaled[0] + 1),
-            "Y_sample": np.arange(Dimension_BBox_scaled[1] + 1),
-            "Z_sample": np.arange(Dimension_BBox_scaled[2] + 1),
-        }
-
-        [VolumeMass, Center, _] = z.calculate_bbox_moment(Voxel3D, 1, XYZ_SampleStruct)
-
-        [
-            AverageVoxelDist2Center,
-            MaxVoxelDist2Center,
-            SphereXYZ_SampleStruct,
-        ] = z.calculate_molecular_radius_and_bbox_samples(
-            Voxel3D, Center, VolumeMass, Param["default_radius_multiplier"]
-        )
-
-        ##################################################################################
-        # You may add any preprocessing on the voxel before applying the Zernike moment. #
-        ##################################################################################
-
-        _, _, SphereBBoxMoment = z.calculate_bbox_moment(Voxel3D, MaxOrder, SphereXYZ_SampleStruct)
-
-        [ZMoment_scaled, ZMoment_raw] = z.calculate_bbox_moment_2_zm_cached(
-            SphereBBoxMoment, BBoxToZMCache
-        )
-
-        # Mode == 0 is the default, Canterakis normalisation only.
-        # Mode == 1 is for 3DZD's 121 norm.
-        # Mode == 2 is for both 0 and 1
-        ZMList = []
-        if Mode == 0:
-            for TargetOrder2NormRotate in range(2, MaxTargetOrder2NormRotate + 1):
-                ABList = z.calculate_ab_rotation(ZMoment_raw, TargetOrder2NormRotate)
-                ZM = z.calculate_zm_by_ab_rotation_batch(ZMoment_raw, ABList, RotationCache)
-                ZM_mean, _ = z.get_mean_invariant(ZM)
-                ZMList.append(ZM_mean)
-        elif Mode == 1:
-            ZM_3DZD_invariant = z.get_3dzd_121_descriptor(ZMoment_scaled)
-            ZMList.append(ZM_3DZD_invariant)
-        elif Mode == 2:
-            ZM_3DZD_invariant = z.get_3dzd_121_descriptor(ZMoment_scaled)
-            ZMList.append(ZM_3DZD_invariant)
-            for TargetOrder2NormRotate in range(2, MaxTargetOrder2NormRotate + 1):
-                ABList = z.calculate_ab_rotation(ZMoment_raw, TargetOrder2NormRotate)
-                ZM = z.calculate_zm_by_ab_rotation_batch(ZMoment_raw, ABList, RotationCache)
-                ZM_mean, _ = z.get_mean_invariant(ZM)
-                ZMList.append(ZM_mean)
-        return np.concatenate([z[~np.isnan(z)] for z in ZMList])
-
-    ZM = []  # List to store the calculated ZM
-    for f in PDBFileName:
-        ZM.append(core(f, Mode))
-
-    return ZM
 
 
 def main() -> None:
@@ -214,14 +237,6 @@ def main() -> None:
     The script will compute the Zernike moments for each structure using the
     specified parameters and print the resulting descriptors to the console.
     """
-    if len(sys.argv) != 6:
-        print("Usage: ZMPY3D_CLI_BatchZM PDBFileList GridWidth MaximumOrder NormOrder Mode")
-        print(
-            "    This function computes the Zernike moment based on the specified maximum order, normalization order, and voxel gridding width."
-        )
-        print("Error: You must provide exactly five input arguments.")
-        sys.exit(1)
-
     parser = argparse.ArgumentParser(
         description="Process a .txt file that contains paths to .pdb or .txt files."
     )
@@ -231,7 +246,10 @@ def main() -> None:
         help="The input file to process (must end with .txt) containing paths to .pdb or .txt files.",
     )
     parser.add_argument(
-        "GW", type=float, choices=[0.25, 0.50, 1.00], help="Grid width must be 0.25, 0.50 or 1.00."
+        "GW",
+        type=float,
+        choices=[0.25, 0.50, 1.00],
+        help="Grid width must be 0.25, 0.50 or 1.00.",
     )
     parser.add_argument(
         "MaxOrder",
@@ -242,7 +260,15 @@ def main() -> None:
     parser.add_argument(
         "MaxN", type=int, help="Maximum normalisation order must be an integer number."
     )
-    parser.add_argument("Mode", type=int, choices=[0, 1, 2], help="Mode must be 0, 1 or 2.")
+    parser.add_argument(
+        "Mode", type=int, choices=[0, 1, 2], help="Mode must be 0, 1 or 2."
+    )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=16,
+        help="Maximum structures processed in one padded device batch (default: 16).",
+    )
 
     args = parser.parse_args()
 
@@ -257,6 +283,8 @@ def main() -> None:
         parser.error(
             "Maximum normalisation order must be larger than 2 and less than or equal to the maximum order of calculating ZM."
         )
+    if args.batch_size <= 0:
+        parser.error("--batch-size must be a positive integer")
 
     with open(input_file, "r") as file:
         lines = file.readlines()
@@ -273,12 +301,21 @@ def main() -> None:
 
         pdb_file_list.append(pdb_file)
 
-    Result = ZMPY3D_CLI_BatchZM(pdb_file_list, args.GW, args.MaxOrder, args.MaxN, args.Mode)
+    Result = ZMPY3D_CLI_BatchZM(
+        pdb_file_list,
+        args.GW,
+        args.MaxOrder,
+        args.MaxN,
+        args.Mode,
+        BatchSize=args.batch_size,
+    )
 
-    np.set_printoptions(threshold=Result[0].size)
+    np.set_printoptions(
+        threshold=Result.values.shape[1] if Result.values.ndim == 2 else 0
+    )
 
-    for x in Result:
-        print(x)
+    for values, mask in zip(np.asarray(Result.values), np.asarray(Result.is_valid)):
+        print(values[mask])
         print("\n")
 
 

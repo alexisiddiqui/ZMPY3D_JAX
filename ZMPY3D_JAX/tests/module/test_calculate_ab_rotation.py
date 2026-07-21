@@ -11,11 +11,14 @@ import pytest
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-import ZMPY3D_JAX as z
+import ZMPY3D_JAX as z  # noqa: E402
+from ZMPY3D_JAX.lib.calculate_ab_candidates_jax import (  # noqa: E402
+    calculate_ab_rotation_compact_candidates,
+)
 
 upstream_root = Path(__file__).resolve().parents[3] / "externals/ZMPY3D"
 sys.path.insert(0, str(upstream_root))
-from ZMPY3D.lib.calculate_ab_rotation_02_all import (
+from ZMPY3D.lib.calculate_ab_rotation_02_all import (  # noqa: E402
     calculate_ab_rotation_02_all as upstream_calculate_ab_rotation_all,
 )
 
@@ -139,6 +142,33 @@ class TestCalculateABRotation:
         assert fixed.is_valid.shape == fixed.pairs.shape[:1]
         assert fixed.is_valid.dtype == np.bool_
         np.testing.assert_array_equal(actual, expected)
+
+    @pytest.mark.parametrize("target_order", range(2, 7))
+    def test_compact_candidates_match_valid_quartic_roots(
+        self, real_protein_zm, target_order
+    ):
+        full = z.calculate_ab_rotation_candidates(real_protein_zm, target_order)
+        compact = calculate_ab_rotation_compact_candidates(
+            real_protein_zm, target_order
+        )
+        full_pairs = np.asarray(full.pairs)[np.asarray(full.is_valid)]
+        compact_pairs = np.asarray(compact.pairs)[np.asarray(compact.is_valid)]
+
+        expected_slots = 8 if target_order % 2 == 0 else 4
+        assert compact.pairs.shape == (expected_slots, 2)
+        assert compact_pairs.shape == full_pairs.shape
+        distances = np.max(
+            np.abs(compact_pairs[:, None, :] - full_pairs[None, :, :]), axis=2
+        )
+        np.testing.assert_array_less(np.min(distances, axis=1), 1e-5)
+
+    def test_compact_candidates_mask_degenerate_moments(self):
+        zero_zm = np.zeros((7, 7, 13), dtype=complex)
+        compact = calculate_ab_rotation_compact_candidates(zero_zm, 2)
+
+        assert compact.pairs.shape == (8, 2)
+        assert not bool(np.any(compact.is_valid))
+        assert bool(np.all(np.isfinite(compact.pairs)))
 
     def test_zero_moments(self):
         """Test with zero Zernike moments."""

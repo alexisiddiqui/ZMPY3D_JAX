@@ -12,13 +12,13 @@ import numpy as np
 import ZMPY3D_JAX.config as _config
 
 
-def fill_voxel_by_weight_density04(
+def fill_voxel_by_weight_density_host(
     xyz: chex.Array,
     aa_name_list: Sequence[str],
     residue_weight_map: Dict[str, float],
     grid_width: float,
     residue_box: Dict[str, np.ndarray],
-) -> Tuple[chex.Array, chex.Array]:
+) -> Tuple[np.ndarray, np.ndarray]:
     """Fills a 3D voxel grid with density values based on atomic coordinates, amino acid types,
     and pre-calculated residue density boxes. This effectively converts a discrete atomic
     structure into a continuous density map.
@@ -41,12 +41,16 @@ def fill_voxel_by_weight_density04(
         raise ValueError("aa_name_list must contain one residue name per coordinate")
 
     if xyz.shape[0] == 0:
-        return jnp.zeros((0, 0, 0), dtype=_config.FLOAT_DTYPE), jnp.full(
-            (3,), jnp.nan, dtype=_config.FLOAT_DTYPE
+        return np.zeros((0, 0, 0), dtype=_config.FLOAT_DTYPE), np.full(
+            (3,), np.nan, dtype=_config.FLOAT_DTYPE
         )
 
     unknown = sorted(
-        {name for name in aa_name_list if name not in residue_weight_map or name not in residue_box}
+        {
+            name
+            for name in aa_name_list
+            if name not in residue_weight_map or name not in residue_box
+        }
     )
     if unknown:
         raise ValueError(f"Unknown residue name(s): {', '.join(unknown)}")
@@ -64,9 +68,9 @@ def fill_voxel_by_weight_density04(
 
     max_box_edge = max([box.shape[0] for box in residue_box.values()])
 
-    dimension_bbox_scaled = np.ceil((dimension_bbox_unscaled / grid_width) + max_box_edge).astype(
-        int
-    )
+    dimension_bbox_scaled = np.ceil(
+        (dimension_bbox_unscaled / grid_width) + max_box_edge
+    ).astype(int)
     corner_xyz = min_bbox_point - max_box_edge * grid_width / 2
 
     num_of_atom = xyz.shape[0]
@@ -88,6 +92,20 @@ def fill_voxel_by_weight_density04(
 
         voxel3d[start[0] : end[0], start[1] : end[1], start[2] : end[2]] += aa_box
 
+    return voxel3d, np.asarray(corner_xyz, dtype=_config.FLOAT_DTYPE)
+
+
+def fill_voxel_by_weight_density04(
+    xyz: chex.Array,
+    aa_name_list: Sequence[str],
+    residue_weight_map: Dict[str, float],
+    grid_width: float,
+    residue_box: Dict[str, np.ndarray],
+) -> Tuple[chex.Array, chex.Array]:
+    """Fill a voxel grid on the host and transfer the completed arrays to JAX."""
+    voxel3d, corner_xyz = fill_voxel_by_weight_density_host(
+        xyz, aa_name_list, residue_weight_map, grid_width, residue_box
+    )
     return jnp.asarray(voxel3d, dtype=_config.FLOAT_DTYPE), jnp.asarray(
         corner_xyz, dtype=_config.FLOAT_DTYPE
     )

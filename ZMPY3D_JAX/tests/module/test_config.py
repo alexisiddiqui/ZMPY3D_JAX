@@ -61,6 +61,18 @@ assert fixed_single.pairs.dtype.name == {complex_name!r}
 assert fixed_all.pairs.dtype.name == {complex_name!r}
 assert fixed_single.is_valid.dtype.name == "bool"
 assert fixed_all.is_valid.dtype.name == "bool"
+descriptor_cache = z.prepare_descriptor_assembly_cache(6)
+descriptor_matrix = z.get_3dzd_121_descriptor(
+    np.ones((7, 7, 7), dtype=complex)
+)
+descriptor_vector = z.assemble_descriptor_vector(
+    descriptor_matrix, np.empty((0, 7, 7, 7)), descriptor_cache
+)
+assert descriptor_matrix.dtype.name == {float_name!r}
+assert descriptor_vector.values.dtype.name == {float_name!r}
+assert descriptor_vector.is_valid.dtype.name == "bool"
+assert descriptor_cache.descriptor_indices.dtype.name == "int32"
+assert descriptor_cache.moment_indices.dtype.name == "int32"
 params = z.get_global_parameter()
 residue_boxes = z.get_residue_gaussian_density_cache(params)
 assert all(

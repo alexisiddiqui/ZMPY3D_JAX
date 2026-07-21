@@ -25,9 +25,11 @@ import os
 import pickle
 import sys
 
+import jax.numpy as jnp
 import numpy as np
 
 import ZMPY3D_JAX as z
+from ZMPY3D_JAX.lib.descriptor_assembly import compact_descriptor_for_host
 
 
 def ZMPY3D_CLI_ZM(
@@ -36,7 +38,7 @@ def ZMPY3D_CLI_ZM(
     MaxOrder: int = 6,
     MaxTargetOrder2NormRotate: int = 5,
     Mode: int = 0,
-) -> np.ndarray:
+) -> z.DescriptorVector:
     """
     Calculate 3D Zernike moments for a single PDB structure.
 
@@ -63,9 +65,8 @@ def ZMPY3D_CLI_ZM(
 
     Returns
     -------
-    numpy.ndarray
-        Concatenated array of Zernike moment descriptors with NaN values removed.
-        The specific descriptors depend on the Mode parameter.
+    DescriptorVector
+        Fixed-shape JAX descriptor values and their same-shape validity mask.
 
     Notes
     -----
@@ -120,6 +121,7 @@ def ZMPY3D_CLI_ZM(
     BBoxToZMCache = z.prepare_bbox_to_zm_cache(
         MaxOrder, GCache_complex, GCache_pqr_linear, GCache_complex_index, CLMCache3D
     )
+    DescriptorCache = z.prepare_descriptor_assembly_cache(MaxOrder)
 
     ResidueBox = z.get_residue_gaussian_density_cache(Param)
 
@@ -159,7 +161,11 @@ def ZMPY3D_CLI_ZM(
     # Mode == 0 is the default, Canterakis normalisation only.
     # Mode == 1 is for 3DZD's 121 norm.
     # Mode == 2 is for both 0 and 1
+    if Mode not in (0, 1, 2):
+        raise ValueError("Mode must be 0, 1, or 2")
+
     ZMList = []
+    ZM_3DZD_invariant = None
     if Mode == 0:
         for TargetOrder2NormRotate in range(2, MaxTargetOrder2NormRotate + 1):
             ABList = z.calculate_ab_rotation(ZMoment_raw, TargetOrder2NormRotate)
@@ -168,10 +174,8 @@ def ZMPY3D_CLI_ZM(
             ZMList.append(ZM_mean)
     elif Mode == 1:
         ZM_3DZD_invariant = z.get_3dzd_121_descriptor(ZMoment_scaled)
-        ZMList.append(ZM_3DZD_invariant)
     elif Mode == 2:
         ZM_3DZD_invariant = z.get_3dzd_121_descriptor(ZMoment_scaled)
-        ZMList.append(ZM_3DZD_invariant)
 
         for TargetOrder2NormRotate in range(2, MaxTargetOrder2NormRotate + 1):
             ABList = z.calculate_ab_rotation(ZMoment_raw, TargetOrder2NormRotate)
@@ -179,7 +183,12 @@ def ZMPY3D_CLI_ZM(
             ZM_mean, _ = z.get_mean_invariant(ZM)
             ZMList.append(ZM_mean)
 
-    return np.concatenate([z[~np.isnan(z)] for z in ZMList])
+    means = (
+        jnp.stack(ZMList)
+        if ZMList
+        else jnp.empty((0, MaxOrder + 1, MaxOrder + 1, MaxOrder + 1))
+    )
+    return z.assemble_descriptor_vector(ZM_3DZD_invariant, means, DescriptorCache)
 
 
 def main() -> None:
@@ -250,7 +259,8 @@ def main() -> None:
     # print(Result.numpy())
     # print('\n')
 
-    print(ZMPY3D_CLI_ZM(input_file, args.GW, args.MaxOrder, args.MaxN, args.Mode))
+    result = ZMPY3D_CLI_ZM(input_file, args.GW, args.MaxOrder, args.MaxN, args.Mode)
+    print(compact_descriptor_for_host(result))
 
 
 if __name__ == "__main__":

@@ -4,6 +4,7 @@ This example demonstrates how to calculate 3D Zernike moments for a single PDB s
 
 ```python
 import ZMPY3D_JAX as z
+import jax.numpy as jnp
 import numpy as np
 import pickle
 import os
@@ -59,10 +60,16 @@ ZMoment_scaled, _ = z.calculate_bbox_moment_2_zm(MaxOrder, GCache_complex, GCach
 
 # Convert the scaled 3D Zernike moments into 3DZD-based descriptors
 ZM_3DZD_invariant = z.get_3dzd_121_descriptor(ZMoment_scaled)
-ZM_3DZD_invariant_121 = ZM_3DZD_invariant[~np.isnan(ZM_3DZD_invariant)]
+descriptor_cache = z.prepare_descriptor_assembly_cache(MaxOrder)
+ZM_3DZD_invariant_121 = z.assemble_descriptor_vector(
+    ZM_3DZD_invariant,
+    jnp.empty((0, MaxOrder + 1, MaxOrder + 1, MaxOrder + 1)),
+    descriptor_cache,
+)
 
 print("3D Zernike Descriptor (121 invariant):")
-print(ZM_3DZD_invariant_121)
+print(ZM_3DZD_invariant_121.values)
+print(ZM_3DZD_invariant_121.is_valid)
 ```
 
 **CLI Usage:**
@@ -77,6 +84,7 @@ This example demonstrates how to calculate shape similarity scores (ZMScore and 
 
 ```python
 import ZMPY3D_JAX as z
+import jax.numpy as jnp
 import numpy as np
 import pickle
 import os
@@ -138,18 +146,23 @@ def get_descriptors(pdb_filename, MaxOrder, GridWidth, Param, ResidueBox,
     _, _, SphereBBoxMoment = z.calculate_bbox_moment(Voxel3D, MaxOrder, SphereXYZ_SampleStruct)
     ZMoment_scaled, ZMoment_raw = z.calculate_bbox_moment_2_zm(MaxOrder, GCache_complex, GCache_pqr_linear, GCache_complex_index, CLMCache3D, SphereBBoxMoment)
 
-    ZMList = []
     ZM_3DZD_invariant = z.get_3dzd_121_descriptor(ZMoment_scaled)
-    ZMList.append(ZM_3DZD_invariant)
+    RotationCache = z.prepare_zm_rotation_cache(
+        BinomialCache, MaxOrder, CLMCache, s_id, n, l, m, mu, k, IsNLM_Value
+    )
+    DescriptorCache = z.prepare_descriptor_assembly_cache(MaxOrder)
 
     MaxTargetOrder2NormRotate = 5
+    ZMMeans = []
     for TargetOrder2NormRotate in range(2, MaxTargetOrder2NormRotate + 1):
         ABList = z.calculate_ab_rotation(ZMoment_raw, TargetOrder2NormRotate)
-        ZM = z.calculate_zm_by_ab_rotation(ZMoment_raw, BinomialCache, ABList, MaxOrder, CLMCache, s_id, n, l, m, mu, k, IsNLM_Value)
+        ZM = z.calculate_zm_by_ab_rotation_batch(ZMoment_raw, ABList, RotationCache)
         ZM_mean, _ = z.get_mean_invariant(ZM)
-        ZMList.append(ZM_mean)
+        ZMMeans.append(ZM_mean)
 
-    MomentInvariant = np.concatenate([val[~np.isnan(val)] for val in ZMList])
+    MomentInvariant = z.assemble_descriptor_vector(
+        ZM_3DZD_invariant, jnp.stack(ZMMeans), DescriptorCache
+    )
 
     TotalResidueWeight = z.get_total_residue_weight(AA_NameList, Param['residue_weight_map'])
     Prctile_list, STD_XYZ_dist2center, S, K = z.get_ca_distance_info(XYZ)
@@ -179,7 +192,13 @@ ZMIndex = np.vstack([P['ZMIndex0'], P['ZMIndex1'], P['ZMIndex2'], P['ZMIndex3'],
 ZMWeight = np.vstack([P['ZMWeight0'], P['ZMWeight1'], P['ZMWeight2'], P['ZMWeight3'], P['ZMWeight4']])
 
 # Computing scores
-ZMScore = np.sum(np.abs(MomentInvariantRawA[ZMIndex] - MomentInvariantRawB[ZMIndex]) * ZMWeight)
+ZMScore = np.sum(
+    np.abs(
+        MomentInvariantRawA.values[ZMIndex]
+        - MomentInvariantRawB.values[ZMIndex]
+    )
+    * ZMWeight
+)
 GeoScore = np.sum(np.asarray(P['GeoWeight']) * (2 * np.abs(GeoDescriptorA - GeoDescriptorB) / (1 + np.abs(GeoDescriptorA) + np.abs(GeoDescriptorB))))
 
 # Rescale scores

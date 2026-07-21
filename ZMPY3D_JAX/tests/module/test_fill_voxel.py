@@ -12,6 +12,9 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 import ZMPY3D_JAX as z
+from ZMPY3D_JAX.lib.fill_voxel_by_weight_density04 import (
+    fill_voxel_by_weight_density_host,
+)
 
 
 class TestFillVoxelByWeightDensity:
@@ -196,6 +199,30 @@ class TestFillVoxelByWeightDensity:
         for actual, expected in zip(legacy_result, host_result):
             assert isinstance(actual, chex.Array)
             np.testing.assert_array_equal(actual, expected)
+
+    def test_host_boundary_matches_public_device_result(
+        self, param, residue_box_cache, sample_coords_multiple_atoms, sample_aa_multiple_atoms
+    ):
+        grid_width = 1.0
+        host_voxel, host_corner = fill_voxel_by_weight_density_host(
+            sample_coords_multiple_atoms,
+            sample_aa_multiple_atoms,
+            param["residue_weight_map"],
+            grid_width,
+            residue_box_cache[grid_width],
+        )
+        device_voxel, device_corner = z.fill_voxel_by_weight_density(
+            sample_coords_multiple_atoms,
+            sample_aa_multiple_atoms,
+            param["residue_weight_map"],
+            grid_width,
+            residue_box_cache[grid_width],
+        )
+
+        assert isinstance(host_voxel, np.ndarray)
+        assert isinstance(host_corner, np.ndarray)
+        np.testing.assert_array_equal(host_voxel, np.asarray(device_voxel))
+        np.testing.assert_array_equal(host_corner, np.asarray(device_corner))
 
     def test_voxel_dimensions_and_corner(
         self, param, residue_box_cache, sample_coords_single_atom, sample_aa_single_atom
