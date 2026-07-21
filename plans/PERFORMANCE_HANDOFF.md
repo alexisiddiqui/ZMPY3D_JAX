@@ -37,8 +37,9 @@ hardware-dependent failure threshold.
 Latest verification:
 
 ```text
-Default suite:             176 passed, 73 deselected
-Order-20 regression tier:  4 passed
+Default suite:             178 passed, 74 deselected
+Order-20 regression tier:  5 passed
+CUDA float32 regression:   4 passed
 CPU timing benchmark:      3 passed
 ```
 
@@ -342,6 +343,25 @@ global promotion. At order 20, segmented and scatter x64 results differ by at mo
 CPU/GPU. For float32 order 20 at GPU batch size 2, segmented reduction improved rotation
 normalization from 8.50 to 1.77 ms/protein while making it deterministic. Automatic selection is
 therefore segmented for float32/complex64 and scatter for x64/complex128.
+
+### Float32 deterministic bbox-to-ZM conversion
+
+Stage-boundary repetition isolated the remaining full-pipeline GPU variation to
+`bbox_to_zm`: order-6 Cartesian bbox moments were bitwise repeatable, but converting the same
+frozen moments repeatedly varied by up to `2.91e-5`. The cause was the second indexed atomic
+accumulation, `summed.at[output_indices].add(contributions)`.
+
+Bbox-to-ZM conversion now shares the sorted associative segmented reduction used by rotation.
+Automatic selection uses it for float32/complex64 and retains scatter for x64/complex128. Both
+order-6 and order-20 GPU stage tests are bitwise repeatable, including five complete descriptor
+pipeline executions from the same voxel batch. The new regression independently freezes inputs at
+the order-1 bbox, radius/sample, max-order bbox and bbox-to-ZM boundaries, so future failures name
+the first unstable kernel rather than only reporting final descriptor drift.
+
+The schema-v5 benchmark adds a bbox-to-ZM reduction profile. A batch-16 CPU x64 diagnostic measured
+scatter at `1.878` and segmented at `1.865` ms/protein for the complete 3DZD-only path (no
+meaningful change). A smaller batch-2 GPU x64 diagnostic measured `0.316` versus `0.345`
+ms/protein; this short run is informational and production x64 continues to select scatter.
 
 ## Previous Batched Stage Profile
 

@@ -7,6 +7,8 @@ import jax.numpy as jnp
 
 import ZMPY3D_JAX.config as _config
 
+from .segmented_reduction import segmented_sum_associative
+
 
 class BBoxToZMCache(NamedTuple):
     """Device-resident constants used by bbox-to-Zernike conversion."""
@@ -37,7 +39,7 @@ def prepare_bbox_to_zm_cache(
     )
 
 
-@partial(jax.jit, static_argnums=(0,))
+@partial(jax.jit, static_argnums=(0, 6))
 def _calculate_bbox_moment_2_zm_jax(
     max_order: int,
     g_coefficients: chex.Array,
@@ -45,13 +47,26 @@ def _calculate_bbox_moment_2_zm_jax(
     output_indices: chex.Array,
     clm: chex.Array,
     bbox_moment: chex.Array,
+    reduction_strategy: str = "auto",
 ) -> Tuple[chex.Array, chex.Array]:
     """Convert bbox moments using prepared device arrays."""
     max_n = max_order + 1
     bbox_flat = jnp.transpose(bbox_moment, (2, 1, 0)).reshape(-1)
     contributions = g_coefficients * bbox_flat[pqr_indices]
-    summed = jnp.zeros(max_n**3, dtype=bbox_moment.dtype)
-    summed = summed.at[output_indices].add(contributions)
+    if reduction_strategy not in ("auto", "scatter", "segmented_scan"):
+        raise ValueError(
+            "reduction_strategy must be 'auto', 'scatter', or 'segmented_scan'"
+        )
+    use_segmented_scan = reduction_strategy == "segmented_scan" or (
+        reduction_strategy == "auto" and _config.COMPLEX_DTYPE == jnp.complex64
+    )
+    if use_segmented_scan:
+        summed = segmented_sum_associative(
+            contributions, output_indices, max_n**3
+        )
+    else:
+        summed = jnp.zeros(max_n**3, dtype=bbox_moment.dtype)
+        summed = summed.at[output_indices].add(contributions)
     nan_value = jnp.asarray(jnp.nan + 0j, dtype=bbox_moment.dtype)
     summed = jnp.where(summed == 0.0, nan_value, summed)
 
@@ -62,7 +77,10 @@ def _calculate_bbox_moment_2_zm_jax(
 
 
 def calculate_bbox_moment_2_zm_cached(
-    bbox_moment: chex.Array, cache: BBoxToZMCache
+    bbox_moment: chex.Array,
+    cache: BBoxToZMCache,
+    *,
+    reduction_strategy: str = "auto",
 ) -> Tuple[chex.Array, chex.Array]:
     """Convert bbox moments with a reusable prepared cache."""
     return _calculate_bbox_moment_2_zm_jax(
@@ -72,6 +90,7 @@ def calculate_bbox_moment_2_zm_cached(
         cache.output_indices,
         cache.clm,
         jnp.asarray(bbox_moment, dtype=_config.COMPLEX_DTYPE),
+        reduction_strategy,
     )
 
 

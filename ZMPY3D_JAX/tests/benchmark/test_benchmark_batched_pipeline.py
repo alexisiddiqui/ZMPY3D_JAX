@@ -58,6 +58,7 @@ NORMALIZATION_REPRESENTATIONS = (
     "analytic_compact_parity",
 )
 ROTATION_REDUCTIONS = ("scatter", "segmented_scan")
+MOMENT_REDUCTIONS = ("scatter", "segmented_scan")
 
 
 def _stage_names() -> tuple[str, ...]:
@@ -244,6 +245,7 @@ def _run_core(
     mode: int = 2,
     normalization_representation: str = "analytic_compact",
     rotation_reduction: str = "auto",
+    moment_reduction: str = "auto",
 ) -> z.DescriptorVector:
     return calculate_descriptor_batch_from_voxels(
         voxels,
@@ -256,6 +258,7 @@ def _run_core(
         descriptor_cache=runtime.descriptor_cache,
         normalization_representation=normalization_representation,
         rotation_reduction=rotation_reduction,
+        moment_reduction=moment_reduction,
     )
 
 
@@ -382,7 +385,7 @@ def _summarize_stage_profile(
 
 
 def _validate_payload(payload: dict[str, Any]) -> None:
-    assert payload["schema_version"] == 4
+    assert payload["schema_version"] == 5
     assert payload["configuration"]["batch_sizes"]
     for workload in payload["results"]["workloads"].values():
         assert 0 < workload["padding_utilization"] <= 1
@@ -404,6 +407,9 @@ def _validate_payload(payload: dict[str, Any]) -> None:
         )
         assert set(workload["rotation_reduction_profile"]) == set(
             ROTATION_REDUCTIONS
+        )
+        assert set(workload["moment_reduction_profile"]) == set(
+            MOMENT_REDUCTIONS
         )
         stage_profile = workload["stage_profile"]
         assert set(stage_profile["stages"]) == set(_stage_names())
@@ -618,6 +624,38 @@ def test_batched_pipeline_throughput_snapshot() -> None:
         reduction_samples = _sample_functions(
             reduction_functions, repeats=repeats, sample_count=sample_count
         )
+        moment_reduction_functions = {
+            reduction: (
+                lambda reduction=reduction: _run_core(
+                    batched_device,
+                    runtime,
+                    mode=1,
+                    moment_reduction=reduction,
+                )
+            )
+            for reduction in MOMENT_REDUCTIONS
+        }
+        moment_reduction_results = {
+            name: function()
+            for name, function in moment_reduction_functions.items()
+        }
+        block_tree(moment_reduction_results)
+        np.testing.assert_allclose(
+            np.asarray(moment_reduction_results["segmented_scan"].values),
+            np.asarray(moment_reduction_results["scatter"].values),
+            rtol=1e-9,
+            atol=1e-9,
+            equal_nan=True,
+        )
+        np.testing.assert_array_equal(
+            np.asarray(moment_reduction_results["segmented_scan"].is_valid),
+            np.asarray(moment_reduction_results["scatter"].is_valid),
+        )
+        moment_reduction_samples = _sample_functions(
+            moment_reduction_functions,
+            repeats=repeats,
+            sample_count=sample_count,
+        )
 
         staged_result, candidates_by_order = _run_staged_core(batched_device, runtime)
         block_tree((staged_result, candidates_by_order))
@@ -696,6 +734,10 @@ def test_batched_pipeline_throughput_snapshot() -> None:
                 name: _summary(samples, batch_size)
                 for name, samples in reduction_samples.items()
             },
+            "moment_reduction_profile": {
+                name: _summary(samples, batch_size)
+                for name, samples in moment_reduction_samples.items()
+            },
             "stage_profile": _summarize_stage_profile(
                 stage_samples, candidates_by_order, batch_size
             ),
@@ -705,7 +747,7 @@ def test_batched_pipeline_throughput_snapshot() -> None:
         }
 
     payload = {
-        "schema_version": 4,
+        "schema_version": 5,
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
         "comparison_mode": "informational",
         "configuration": {
@@ -731,6 +773,7 @@ def test_batched_pipeline_throughput_snapshot() -> None:
                 NORMALIZATION_REPRESENTATIONS
             ),
             "rotation_reductions": list(ROTATION_REDUCTIONS),
+            "moment_reductions": list(MOMENT_REDUCTIONS),
         },
         "environment": {
             "git_revision": _git_revision(),

@@ -122,7 +122,7 @@ def _calculate_bbox_max_order_batch(
     )
 
 
-@partial(jax.jit, static_argnums=(1,))
+@partial(jax.jit, static_argnums=(1, 6))
 def _calculate_bbox_to_zm_batch(
     bbox_moments: chex.Array,
     max_order: int,
@@ -130,6 +130,7 @@ def _calculate_bbox_to_zm_batch(
     pqr_indices: chex.Array,
     output_indices: chex.Array,
     clm: chex.Array,
+    reduction_strategy: str = "auto",
 ):
     complex_moments = jnp.asarray(bbox_moments, dtype=_config.COMPLEX_DTYPE)
     return jax.vmap(
@@ -140,11 +141,12 @@ def _calculate_bbox_to_zm_batch(
             output_indices,
             clm,
             bbox_moment,
+            reduction_strategy,
         )
     )(complex_moments)
 
 
-@partial(jax.jit, static_argnums=(1,))
+@partial(jax.jit, static_argnums=(1, 7))
 def _calculate_zm_batch(
     voxels: chex.Array,
     max_order: int,
@@ -153,6 +155,7 @@ def _calculate_zm_batch(
     pqr_indices: chex.Array,
     output_indices: chex.Array,
     clm: chex.Array,
+    moment_reduction: str = "auto",
 ):
     masses, centers, _ = _calculate_bbox_order1_batch(voxels)
     (
@@ -175,6 +178,7 @@ def _calculate_zm_batch(
         pqr_indices,
         output_indices,
         clm,
+        moment_reduction,
     )
     return has_weight, scaled, raw
 
@@ -459,6 +463,7 @@ def calculate_descriptor_batch_from_voxels(
     descriptor_cache: DescriptorAssemblyCache,
     normalization_representation: str = "analytic_compact",
     rotation_reduction: str = "auto",
+    moment_reduction: str = "auto",
 ) -> DescriptorVector:
     """Calculate complete descriptors for one padded, device-resident voxel batch."""
     if mode not in (0, 1, 2):
@@ -477,6 +482,8 @@ def calculate_descriptor_batch_from_voxels(
         raise ValueError("unknown normalization representation")
     if rotation_reduction not in ("auto", "scatter", "segmented_scan"):
         raise ValueError("unknown rotation reduction")
+    if moment_reduction not in ("auto", "scatter", "segmented_scan"):
+        raise ValueError("unknown moment reduction")
 
     voxel_batch = jnp.asarray(voxels, dtype=_config.FLOAT_DTYPE)
     if voxel_batch.ndim != 4 or voxel_batch.shape[0] == 0:
@@ -492,6 +499,7 @@ def calculate_descriptor_batch_from_voxels(
         bbox_to_zm_cache.pqr_indices,
         bbox_to_zm_cache.output_indices,
         bbox_to_zm_cache.clm,
+        moment_reduction,
     )
     descriptors = _calculate_3dzd_batch(scaled) if mode in (1, 2) else None
 
@@ -532,6 +540,7 @@ def calculate_descriptor_batch_staged(
     descriptor_cache: DescriptorAssemblyCache,
     stage_executor: StageExecutor | None = None,
     rotation_reduction: str = "auto",
+    moment_reduction: str = "auto",
 ) -> tuple[DescriptorVector, dict[int, Any]]:
     """Run the batch pipeline through independently synchronizable device stages."""
     if mode not in (0, 1, 2):
@@ -544,6 +553,8 @@ def calculate_descriptor_batch_staged(
         raise ValueError("descriptor cache maximum order does not match max_order")
     if rotation_reduction not in ("auto", "scatter", "segmented_scan"):
         raise ValueError("unknown rotation reduction")
+    if moment_reduction not in ("auto", "scatter", "segmented_scan"):
+        raise ValueError("unknown moment reduction")
 
     voxel_batch = jnp.asarray(voxels, dtype=_config.FLOAT_DTYPE)
     if voxel_batch.ndim != 4 or voxel_batch.shape[0] == 0:
@@ -583,6 +594,7 @@ def calculate_descriptor_batch_staged(
             bbox_to_zm_cache.pqr_indices,
             bbox_to_zm_cache.output_indices,
             bbox_to_zm_cache.clm,
+            moment_reduction,
         ),
     )
 

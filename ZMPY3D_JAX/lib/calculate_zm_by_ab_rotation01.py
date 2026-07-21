@@ -8,6 +8,8 @@ import numpy as np
 
 import ZMPY3D_JAX.config as _config
 
+from .segmented_reduction import segmented_sum_associative
+
 
 class ZMRotationCache(NamedTuple):
     """Device-resident constants used by the Zernike-moment rotation kernel."""
@@ -51,26 +53,7 @@ def prepare_zm_rotation_cache(
     )
 
 
-def _segmented_sum_associative(
-    values: chex.Array, segment_ids: chex.Array, segment_count: int
-) -> chex.Array:
-    """Deterministically sum contiguous, sorted segments without scatter atomics."""
-    starts = jnp.concatenate(
-        (jnp.ones((1,), dtype=bool), segment_ids[1:] != segment_ids[:-1])
-    )
-
-    def combine(left, right):
-        left_value, left_starts = left
-        right_value, right_starts = right
-        value = jnp.where(right_starts, right_value, left_value + right_value)
-        return value, left_starts | right_starts
-
-    prefixes, _ = jax.lax.associative_scan(combine, (values, starts))
-    ends = jnp.concatenate(
-        (segment_ids[:-1] != segment_ids[1:], jnp.ones((1,), dtype=bool))
-    )
-    end_indices = jnp.nonzero(ends, size=segment_count)[0]
-    return prefixes[end_indices]
+_segmented_sum_associative = segmented_sum_associative
 
 
 @partial(jax.jit, static_argnums=(3, 12))

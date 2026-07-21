@@ -203,14 +203,15 @@ Run the slower order-20 cases separately:
 pytest ZMPY3D_JAX/tests/integration/test_upstream_regression.py -m slow
 ```
 
-Float32 normalization uses deterministic segmented rotation reduction; x64 retains the faster CPU
-scatter reduction. The default suite runs the order-6 float32 representation regression on CPU.
-Run both order 6 and order 20 on CUDA with:
+Float32 moment conversion and normalization use deterministic segmented reductions; x64 retains
+the scatter reductions. The default suite runs order-6 float32 representation and stage-boundary
+repeatability regressions on CPU. Run both order 6 and order 20 on CUDA with:
 
 ```bash
 env -u LD_LIBRARY_PATH ZMPY3D_FLOAT32_REGRESSION_BACKEND=gpu \
   pytest -m "not benchmark" \
-  ZMPY3D_JAX/tests/integration/test_float32_normalization_regression.py
+  ZMPY3D_JAX/tests/integration/test_float32_normalization_regression.py \
+  ZMPY3D_JAX/tests/integration/test_float32_stage_determinism.py
 ```
 
 Run the informational CPU performance comparison with independent JAX and upstream pipelines:
@@ -263,11 +264,13 @@ env -u LD_LIBRARY_PATH ZMPY3D_BENCHMARK_BACKEND=gpu \
 
 By default it alternates the committed 6NT5/6NT6 fixtures at batch sizes 1, 4, and 16. Override
 these with `ZMPY3D_BATCH_SIZES`, and control sampling with `ZMPY3D_BATCH_REPEATS` and
-`ZMPY3D_BATCH_SAMPLES`. The schema-v2 JSON separates host preparation, transfer, first compilation,
+`ZMPY3D_BATCH_SAMPLES`. The schema-v5 JSON separates host preparation, transfer, first compilation,
 warmed device-core throughput, prepared end-to-end throughput, and production Mode 0/1/2 timings.
 It also records a synchronized stage profile for moments, 3DZD, each normalization order's AB
-candidates, rotation and invariant reduction, and final assembly. These stage timings are
-diagnostic and should not be summed to reconstruct fused device-core latency. Results are saved as:
+candidates, rotation and invariant reduction, and final assembly. Separate profiles compare the
+scatter and segmented implementations for bbox-to-ZM conversion and normalization rotation. These
+stage timings are diagnostic and should not be summed to reconstruct fused device-core latency.
+Results are saved as:
 
 ```text
 ZMPY3D_JAX/tests/benchmark/_simple_time_benchmark/batched_pipeline_benchmark_*_*.json

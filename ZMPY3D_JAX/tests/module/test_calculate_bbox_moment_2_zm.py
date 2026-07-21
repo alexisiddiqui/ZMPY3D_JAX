@@ -181,6 +181,26 @@ class TestCalculateBBoxMoment2ZM:
         np.testing.assert_array_equal(actual_scaled, expected_scaled)
         np.testing.assert_array_equal(actual_raw, expected_raw)
 
+    def test_segmented_reduction_matches_scatter(self, bbox_moment, cache_data):
+        """The deterministic reduction preserves bbox-to-ZM numerical results."""
+        cache = z.prepare_bbox_to_zm_cache(
+            cache_data["max_order"],
+            cache_data["GCache_complex"],
+            cache_data["GCache_pqr_linear"],
+            cache_data["GCache_complex_index"],
+            cache_data["CLMCache3D"],
+        )
+        scatter = z.calculate_bbox_moment_2_zm_cached(
+            bbox_moment, cache, reduction_strategy="scatter"
+        )
+        segmented = z.calculate_bbox_moment_2_zm_cached(
+            bbox_moment, cache, reduction_strategy="segmented_scan"
+        )
+        for actual, expected in zip(segmented, scatter, strict=True):
+            np.testing.assert_allclose(
+                actual, expected, rtol=1e-5, atol=1e-5, equal_nan=True
+            )
+
     def test_complex_moment(self, cache_data):
         """Test with complex-valued bounding box moment."""
         max_order = cache_data["max_order"]
