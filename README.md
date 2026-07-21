@@ -203,6 +203,16 @@ Run the slower order-20 cases separately:
 pytest ZMPY3D_JAX/tests/integration/test_upstream_regression.py -m slow
 ```
 
+Float32 normalization uses deterministic segmented rotation reduction; x64 retains the faster CPU
+scatter reduction. The default suite runs the order-6 float32 representation regression on CPU.
+Run both order 6 and order 20 on CUDA with:
+
+```bash
+env -u LD_LIBRARY_PATH ZMPY3D_FLOAT32_REGRESSION_BACKEND=gpu \
+  pytest -m "not benchmark" \
+  ZMPY3D_JAX/tests/integration/test_float32_normalization_regression.py
+```
+
 Run the informational CPU performance comparison with independent JAX and upstream pipelines:
 
 ```bash
@@ -227,7 +237,7 @@ both trials. The harness verifies numerical parity before collecting warmed samp
 synchronized per-stage profile deliberately penalizes very small GPU kernels with launch overhead;
 use the warmed end-to-end result for the primary single-protein comparison.
 
-The benchmark enables CPU/x64 explicitly and writes schema-v3 JSON containing separate setup,
+The benchmark enables CPU/x64 explicitly and writes schema-v4 JSON containing separate setup,
 first-execution, warmed end-to-end, and synchronized per-stage timing distributions. It also ranks
 stages by their contribution to the warmed JAX-over-upstream CPU gap. Results are written under:
 

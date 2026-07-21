@@ -9,9 +9,29 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+import jax.numpy as jnp
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 import ZMPY3D_JAX as z
+from ZMPY3D_JAX.lib.calculate_zm_by_ab_rotation01 import (
+    _segmented_sum_associative,
+)
+
+
+def test_segmented_sum_matches_numpy_add_at():
+    segment_ids = np.array([0, 0, 1, 2, 2, 2, 3], dtype=np.int32)
+    values = np.array(
+        [1 + 2j, -3 + 1j, 4 - 2j, 0.5j, 2 + 0j, -1 - 0.5j, 7 + 3j],
+        dtype=np.complex64,
+    )
+    expected = np.zeros(4, dtype=np.complex64)
+    np.add.at(expected, segment_ids, values)
+
+    actual = _segmented_sum_associative(
+        jnp.asarray(values), jnp.asarray(segment_ids), 4
+    )
+
+    np.testing.assert_allclose(actual, expected, rtol=0, atol=0)
 
 
 def _load_upstream_rotation():
@@ -363,6 +383,9 @@ class TestCalculateZMByABRotation:
             cache_data["IsNLM_Value"],
         )
         batch = z.calculate_zm_by_ab_rotation_batch(zm_raw, ab_list, cache)
+        segmented = z.calculate_zm_by_ab_rotation_batch(
+            zm_raw, ab_list, cache, reduction_strategy="segmented_scan"
+        )
         legacy = z.calculate_zm_by_ab_rotation(
             zm_raw,
             cache_data["BinomialCache"],
@@ -380,6 +403,9 @@ class TestCalculateZMByABRotation:
 
         assert batch.shape == (len(ab_list), 7, 7, 7)
         np.testing.assert_allclose(np.asarray(batch), np.stack(legacy), equal_nan=True)
+        np.testing.assert_allclose(
+            np.asarray(segmented), np.asarray(batch), rtol=2e-5, atol=2e-6, equal_nan=True
+        )
         batch_mean, batch_std = z.get_mean_invariant(batch)
         list_mean, list_std = z.get_mean_invariant(legacy)
         np.testing.assert_allclose(batch_mean, list_mean, equal_nan=True)

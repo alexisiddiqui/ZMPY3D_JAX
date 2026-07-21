@@ -200,7 +200,7 @@ def _calculate_ab_compact_candidates_batch(
     )(raw_moments)
 
 
-@partial(jax.jit, static_argnums=(2,))
+@partial(jax.jit, static_argnums=(2, 12))
 def _calculate_rotation_batch(
     raw_moments: chex.Array,
     pairs: chex.Array,
@@ -214,6 +214,7 @@ def _calculate_rotation_batch(
     mu: chex.Array,
     k: chex.Array,
     is_nlm_value: chex.Array,
+    reduction_strategy: str = "auto",
 ) -> chex.Array:
     return jax.vmap(
         lambda raw, item_pairs: _calculate_zm_by_ab_rotation_jax(
@@ -229,6 +230,7 @@ def _calculate_rotation_batch(
             mu,
             k,
             is_nlm_value,
+            reduction_strategy,
         )
     )(raw_moments, pairs)
 
@@ -244,7 +246,7 @@ def _calculate_masked_mean_batch(
     return jnp.where(valid_count > 0, mean, jnp.nan)
 
 
-@partial(jax.jit, static_argnums=(1, 3))
+@partial(jax.jit, static_argnums=(1, 3, 12))
 def _calculate_normalized_mean_batch(
     raw_moments: chex.Array,
     target_order: int,
@@ -258,6 +260,7 @@ def _calculate_normalized_mean_batch(
     mu: chex.Array,
     k: chex.Array,
     is_nlm_value: chex.Array,
+    reduction_strategy: str = "auto",
 ) -> chex.Array:
     candidates = _calculate_ab_candidates_batch(raw_moments, target_order)
     rotated = _calculate_rotation_batch(
@@ -273,11 +276,12 @@ def _calculate_normalized_mean_batch(
         mu,
         k,
         is_nlm_value,
+        reduction_strategy,
     )
     return _calculate_masked_mean_batch(rotated, candidates.is_valid)
 
 
-@partial(jax.jit, static_argnums=(1, 3))
+@partial(jax.jit, static_argnums=(1, 3, 12))
 def _calculate_normalized_mean_compact_batch(
     raw_moments: chex.Array,
     target_order: int,
@@ -291,6 +295,7 @@ def _calculate_normalized_mean_compact_batch(
     mu: chex.Array,
     k: chex.Array,
     is_nlm_value: chex.Array,
+    reduction_strategy: str = "auto",
 ) -> chex.Array:
     candidates = _calculate_ab_compact_candidates_batch(raw_moments, target_order)
     rotated = _calculate_rotation_batch(
@@ -306,11 +311,12 @@ def _calculate_normalized_mean_compact_batch(
         mu,
         k,
         is_nlm_value,
+        reduction_strategy,
     )
     return _calculate_masked_mean_batch(rotated, candidates.is_valid)
 
 
-@partial(jax.jit, static_argnums=(1, 3))
+@partial(jax.jit, static_argnums=(1, 3, 12))
 def _calculate_normalized_means_parity_batch(
     raw_moments: chex.Array,
     target_orders: tuple[int, ...],
@@ -324,6 +330,7 @@ def _calculate_normalized_means_parity_batch(
     mu: chex.Array,
     k: chex.Array,
     is_nlm_value: chex.Array,
+    reduction_strategy: str = "auto",
 ) -> chex.Array:
     """Fuse same-capacity compact orders into one candidate/rotation executable."""
     pairs = []
@@ -354,6 +361,7 @@ def _calculate_normalized_means_parity_batch(
                 mu,
                 k,
                 is_nlm_value,
+                reduction_strategy,
             )
         )(item_pair_groups)
 
@@ -370,6 +378,7 @@ def _calculate_normalization_means(
     target_orders: tuple[int, ...],
     representation: str,
     rotation_cache: ZMRotationCache,
+    reduction_strategy: str,
 ) -> chex.Array:
     arguments = (
         rotation_cache.binomial,
@@ -390,7 +399,10 @@ def _calculate_normalization_means(
             else _calculate_normalized_mean_compact_batch
         )
         return jnp.stack(
-            [function(raw, target_order, *arguments) for target_order in target_orders],
+            [
+                function(raw, target_order, *arguments, reduction_strategy)
+                for target_order in target_orders
+            ],
             axis=1,
         )
 
@@ -399,7 +411,7 @@ def _calculate_normalization_means(
         parity_orders = tuple(order for order in target_orders if order % 2 == parity)
         if parity_orders:
             parity_means = _calculate_normalized_means_parity_batch(
-                raw, parity_orders, *arguments
+                raw, parity_orders, *arguments, reduction_strategy
             )
             for index, order in enumerate(parity_orders):
                 by_order[order] = parity_means[:, index]
@@ -446,6 +458,7 @@ def calculate_descriptor_batch_from_voxels(
     rotation_cache: ZMRotationCache,
     descriptor_cache: DescriptorAssemblyCache,
     normalization_representation: str = "analytic_compact",
+    rotation_reduction: str = "auto",
 ) -> DescriptorVector:
     """Calculate complete descriptors for one padded, device-resident voxel batch."""
     if mode not in (0, 1, 2):
@@ -462,6 +475,8 @@ def calculate_descriptor_batch_from_voxels(
         "analytic_compact_parity",
     ):
         raise ValueError("unknown normalization representation")
+    if rotation_reduction not in ("auto", "scatter", "segmented_scan"):
+        raise ValueError("unknown rotation reduction")
 
     voxel_batch = jnp.asarray(voxels, dtype=_config.FLOAT_DTYPE)
     if voxel_batch.ndim != 4 or voxel_batch.shape[0] == 0:
@@ -486,6 +501,7 @@ def calculate_descriptor_batch_from_voxels(
             tuple(range(2, max_target_order + 1)),
             normalization_representation,
             rotation_cache,
+            rotation_reduction,
         )
     else:
         max_n = max_order + 1
@@ -515,6 +531,7 @@ def calculate_descriptor_batch_staged(
     rotation_cache: ZMRotationCache,
     descriptor_cache: DescriptorAssemblyCache,
     stage_executor: StageExecutor | None = None,
+    rotation_reduction: str = "auto",
 ) -> tuple[DescriptorVector, dict[int, Any]]:
     """Run the batch pipeline through independently synchronizable device stages."""
     if mode not in (0, 1, 2):
@@ -525,6 +542,8 @@ def calculate_descriptor_batch_staged(
         raise ValueError("prepared cache maximum order does not match max_order")
     if descriptor_cache.max_order != max_order:
         raise ValueError("descriptor cache maximum order does not match max_order")
+    if rotation_reduction not in ("auto", "scatter", "segmented_scan"):
+        raise ValueError("unknown rotation reduction")
 
     voxel_batch = jnp.asarray(voxels, dtype=_config.FLOAT_DTYPE)
     if voxel_batch.ndim != 4 or voxel_batch.shape[0] == 0:
@@ -598,6 +617,7 @@ def calculate_descriptor_batch_staged(
                     rotation_cache.mu,
                     rotation_cache.k,
                     rotation_cache.is_nlm_value,
+                    rotation_reduction,
                 ),
             )
             means_by_order.append(

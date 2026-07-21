@@ -57,6 +57,7 @@ NORMALIZATION_REPRESENTATIONS = (
     "analytic_compact",
     "analytic_compact_parity",
 )
+ROTATION_REDUCTIONS = ("scatter", "segmented_scan")
 
 
 def _stage_names() -> tuple[str, ...]:
@@ -242,6 +243,7 @@ def _run_core(
     runtime: _BatchZMRuntime,
     mode: int = 2,
     normalization_representation: str = "analytic_compact",
+    rotation_reduction: str = "auto",
 ) -> z.DescriptorVector:
     return calculate_descriptor_batch_from_voxels(
         voxels,
@@ -253,6 +255,7 @@ def _run_core(
         rotation_cache=runtime.rotation_cache,
         descriptor_cache=runtime.descriptor_cache,
         normalization_representation=normalization_representation,
+        rotation_reduction=rotation_reduction,
     )
 
 
@@ -379,7 +382,7 @@ def _summarize_stage_profile(
 
 
 def _validate_payload(payload: dict[str, Any]) -> None:
-    assert payload["schema_version"] == 3
+    assert payload["schema_version"] == 4
     assert payload["configuration"]["batch_sizes"]
     for workload in payload["results"]["workloads"].values():
         assert 0 < workload["padding_utilization"] <= 1
@@ -398,6 +401,9 @@ def _validate_payload(payload: dict[str, Any]) -> None:
         }
         assert set(workload["normalization_representation_profile"]) == set(
             NORMALIZATION_REPRESENTATIONS
+        )
+        assert set(workload["rotation_reduction_profile"]) == set(
+            ROTATION_REDUCTIONS
         )
         stage_profile = workload["stage_profile"]
         assert set(stage_profile["stages"]) == set(_stage_names())
@@ -583,6 +589,35 @@ def test_batched_pipeline_throughput_snapshot() -> None:
         representation_samples = _sample_functions(
             representation_functions, repeats=repeats, sample_count=sample_count
         )
+        reduction_functions = {
+            reduction: (
+                lambda reduction=reduction: _run_core(
+                    batched_device,
+                    runtime,
+                    mode=0,
+                    rotation_reduction=reduction,
+                )
+            )
+            for reduction in ROTATION_REDUCTIONS
+        }
+        reduction_results = {
+            name: function() for name, function in reduction_functions.items()
+        }
+        block_tree(reduction_results)
+        np.testing.assert_allclose(
+            np.asarray(reduction_results["segmented_scan"].values),
+            np.asarray(reduction_results["scatter"].values),
+            rtol=1e-9,
+            atol=1e-9,
+            equal_nan=True,
+        )
+        np.testing.assert_array_equal(
+            np.asarray(reduction_results["segmented_scan"].is_valid),
+            np.asarray(reduction_results["scatter"].is_valid),
+        )
+        reduction_samples = _sample_functions(
+            reduction_functions, repeats=repeats, sample_count=sample_count
+        )
 
         staged_result, candidates_by_order = _run_staged_core(batched_device, runtime)
         block_tree((staged_result, candidates_by_order))
@@ -657,6 +692,10 @@ def test_batched_pipeline_throughput_snapshot() -> None:
                 name: _summary(samples, batch_size)
                 for name, samples in representation_samples.items()
             },
+            "rotation_reduction_profile": {
+                name: _summary(samples, batch_size)
+                for name, samples in reduction_samples.items()
+            },
             "stage_profile": _summarize_stage_profile(
                 stage_samples, candidates_by_order, batch_size
             ),
@@ -666,7 +705,7 @@ def test_batched_pipeline_throughput_snapshot() -> None:
         }
 
     payload = {
-        "schema_version": 3,
+        "schema_version": 4,
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
         "comparison_mode": "informational",
         "configuration": {
@@ -691,6 +730,7 @@ def test_batched_pipeline_throughput_snapshot() -> None:
             "normalization_representations": list(
                 NORMALIZATION_REPRESENTATIONS
             ),
+            "rotation_reductions": list(ROTATION_REDUCTIONS),
         },
         "environment": {
             "git_revision": _git_revision(),

@@ -37,8 +37,8 @@ hardware-dependent failure threshold.
 Latest verification:
 
 ```text
-Default suite:             174 passed, 72 deselected
-Order-20 regression tier:  3 passed
+Default suite:             176 passed, 73 deselected
+Order-20 regression tier:  4 passed
 CPU timing benchmark:      3 passed
 ```
 
@@ -304,24 +304,44 @@ the real-root mask. Production normalization now solves the remaining quadratic 
 stable formula, retaining fixed device shapes while reducing capacity from 16 to 8 slots for even
 orders and from 8 to 4 slots for odd orders. No per-protein host compaction or bucketing is used.
 
-The schema-v3 harness compares the legacy full-fixed representation, compact per-order execution,
+The schema-v4 harness compares the legacy full-fixed representation, compact per-order execution,
 and compact parity-fused execution. A clean batch-16 promotion run (5 samples, 2 repeats, x64,
 mixed 6NT5/6NT6 inputs) measured:
 
 | Representation | CPU ms/protein | GPU ms/protein | GPU change vs full |
 | --- | ---: | ---: | ---: |
-| Full fixed | 2.156 | 19.118 | baseline |
-| Analytic compact, per order | 1.984 | 7.865 | 58.9% faster |
-| Analytic compact, parity fused | 1.997 | 10.023 | 47.6% faster |
+| Full fixed | 2.126 | 18.938 | baseline |
+| Analytic compact, per order | 2.009 | 7.797 | 58.8% faster |
+| Analytic compact, parity fused | 1.926 | 10.029 | 47.0% faster |
 
-The compact per-order representation is the production default because it is fastest on both
-measured backends. The parity-fused variant remains in the harness as an experimental comparison;
-grouping even and odd orders did not outperform the smaller independent launches on the RTX 3090.
+The compact per-order representation remains the production default because it is fastest on the
+RTX 3090 and improves on full-fixed CPU execution. The parity-fused variant remains in the harness
+as an experimental comparison; CPU differences are small and variable, while grouping even and
+odd orders consistently loses to the smaller independent launches on the GPU.
 The legacy quartic path remains available as the numerical oracle.
 
 Structured results:
-`batched_pipeline_benchmark_cpu_20260721T132116_520720Z.json` and
-`batched_pipeline_benchmark_gpu_20260721T132858_084233Z.json`.
+`batched_pipeline_benchmark_cpu_20260721T141713_179373Z.json` and
+`batched_pipeline_benchmark_gpu_20260721T141820_460543Z.json`.
+
+### Float32 deterministic rotation
+
+GPU float32 order-20 representation comparisons were initially contaminated by nondeterministic
+atomic accumulation in `z_nlm.at[s_id].add`. Candidate pairs were stable to approximately `3e-7`,
+but repeated rotations from identical inputs varied by approximately `5e-4`, which amplified to
+multi-unit descriptor changes at order 20.
+
+Rotation now provides a deterministic segmented associative reduction for float32 while retaining
+scatter for x64. With one frozen raw-moment tensor, five repeated CPU and GPU normalization runs
+are bitwise identical. At order 20, all three representations agree within `1.19e-3` absolute on
+the RTX 3090 and retain identical masks and candidate-valid counts.
+
+The schema-v4 batch-16 x64 profile measured scatter versus segmented reduction at 2.012 versus
+2.508 ms/protein on CPU and 7.857 versus 7.861 ms/protein on GPU. The CPU regression prevents a
+global promotion. At order 20, segmented and scatter x64 results differ by at most `6.4e-14` on
+CPU/GPU. For float32 order 20 at GPU batch size 2, segmented reduction improved rotation
+normalization from 8.50 to 1.77 ms/protein while making it deterministic. Automatic selection is
+therefore segmented for float32/complex64 and scatter for x64/complex128.
 
 ## Previous Batched Stage Profile
 
@@ -383,6 +403,14 @@ Run the order-20 regression tier:
 
 ```bash
 uv run --no-sync pytest -q ZMPY3D_JAX/tests/integration/test_upstream_regression.py -m slow
+```
+
+Run the isolated float32 representation regression on CUDA:
+
+```bash
+env -u LD_LIBRARY_PATH ZMPY3D_FLOAT32_REGRESSION_BACKEND=gpu \
+  uv run --no-sync pytest -q -m "not benchmark" \
+  ZMPY3D_JAX/tests/integration/test_float32_normalization_regression.py
 ```
 
 Run the CPU performance comparison:

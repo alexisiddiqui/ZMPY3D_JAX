@@ -51,7 +51,29 @@ def prepare_zm_rotation_cache(
     )
 
 
-@partial(jax.jit, static_argnums=(3,))
+def _segmented_sum_associative(
+    values: chex.Array, segment_ids: chex.Array, segment_count: int
+) -> chex.Array:
+    """Deterministically sum contiguous, sorted segments without scatter atomics."""
+    starts = jnp.concatenate(
+        (jnp.ones((1,), dtype=bool), segment_ids[1:] != segment_ids[:-1])
+    )
+
+    def combine(left, right):
+        left_value, left_starts = left
+        right_value, right_starts = right
+        value = jnp.where(right_starts, right_value, left_value + right_value)
+        return value, left_starts | right_starts
+
+    prefixes, _ = jax.lax.associative_scan(combine, (values, starts))
+    ends = jnp.concatenate(
+        (segment_ids[:-1] != segment_ids[1:], jnp.ones((1,), dtype=bool))
+    )
+    end_indices = jnp.nonzero(ends, size=segment_count)[0]
+    return prefixes[end_indices]
+
+
+@partial(jax.jit, static_argnums=(3, 12))
 def _calculate_zm_by_ab_rotation_jax(
     z_moment_raw: chex.Array,
     binomial_cache: chex.Array,
@@ -65,6 +87,7 @@ def _calculate_zm_by_ab_rotation_jax(
     mu: chex.Array,
     k: chex.Array,
     is_nlm_value: chex.Array,
+    reduction_strategy: str = "auto",
 ) -> chex.Array:
     """Vectorized rotation kernel with one output array per ``(a, b)`` pair."""
     complex_dtype = _config.COMPLEX_DTYPE
@@ -81,6 +104,13 @@ def _calculate_zm_by_ab_rotation_jax(
     mu = jnp.asarray(mu, dtype=jnp.int32)
     k = jnp.asarray(k, dtype=jnp.int32)
     is_nlm_value = jnp.asarray(is_nlm_value, dtype=jnp.int32)
+    if reduction_strategy not in ("auto", "scatter", "segmented_scan"):
+        raise ValueError(
+            "reduction_strategy must be 'auto', 'scatter', or 'segmented_scan'"
+        )
+    use_segmented_scan = reduction_strategy == "segmented_scan" or (
+        reduction_strategy == "auto" and complex_dtype == jnp.complex64
+    )
 
     positive_mu = z_moment_raw[n, l, jnp.abs(mu)]
     negative_phase = jnp.where(mu % 2 == 0, 1.0, -1.0).astype(complex_dtype)
@@ -128,8 +158,13 @@ def _calculate_zm_by_ab_rotation_jax(
                 + binomial
             )
             contributions = jnp.where(nonzero_f, jnp.exp(nlm), 0.0)
-            z_nlm = jnp.zeros(is_nlm_value.shape, dtype=complex_dtype)
-            z_nlm = z_nlm.at[s_id].add(contributions)
+            if use_segmented_scan:
+                z_nlm = _segmented_sum_associative(
+                    contributions, s_id, is_nlm_value.shape[0]
+                )
+            else:
+                z_nlm = jnp.zeros(is_nlm_value.shape, dtype=complex_dtype)
+                z_nlm = z_nlm.at[s_id].add(contributions)
             return format_output(z_nlm)
 
         return jax.lax.cond(identity, identity_rotation, ordinary_rotation, operand=None)
@@ -141,8 +176,10 @@ def calculate_zm_by_ab_rotation_batch(
     z_moment_raw: chex.Array,
     ab_list: chex.Array,
     cache: ZMRotationCache,
+    *,
+    reduction_strategy: str = "auto",
 ) -> chex.Array:
-    """Rotate all Cayley--Klein pairs into a JAX batch of shape ``(r, m, l, n)``."""
+    """Rotate pairs into ``(r, m, l, n)``; auto uses scan for float32."""
     return _calculate_zm_by_ab_rotation_jax(
         jnp.asarray(z_moment_raw, dtype=_config.COMPLEX_DTYPE),
         cache.binomial,
@@ -156,6 +193,7 @@ def calculate_zm_by_ab_rotation_batch(
         cache.mu,
         cache.k,
         cache.is_nlm_value,
+        reduction_strategy,
     )
 
 
