@@ -104,13 +104,18 @@ def test_staged_batch_matches_fused_and_reports_candidate_slots(pdb_files):
     parity_fused = calculate_descriptor_batch_from_voxels(
         voxels, **arguments, normalization_representation="analytic_compact_parity"
     )
+    grouped_flat = calculate_descriptor_batch_from_voxels(
+        voxels,
+        **arguments,
+        normalization_representation="companion_compact_grouped_flat",
+    )
     staged, candidates = calculate_descriptor_batch_staged(voxels, **arguments)
 
     np.testing.assert_allclose(
         staged.values, fused.values, rtol=2e-6, atol=5e-6, equal_nan=True
     )
     np.testing.assert_array_equal(staged.is_valid, fused.is_valid)
-    for alternative in (compact, parity_fused):
+    for alternative in (compact, parity_fused, grouped_flat):
         np.testing.assert_allclose(
             alternative.values, fused.values, rtol=1e-5, atol=1e-5, equal_nan=True
         )

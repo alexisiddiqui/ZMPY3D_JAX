@@ -141,7 +141,7 @@ def calculate_descriptor_mixed_prototype(
     means = _calculate_normalization_means(
         raw,
         target_orders,
-        "analytic_compact",
+        "companion_compact_grouped",
         rotation_cache,
         "auto",
     )

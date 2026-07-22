@@ -16,6 +16,10 @@ import ZMPY3D_JAX as z
 from ZMPY3D_JAX.lib.calculate_zm_by_ab_rotation01 import (
     _segmented_sum_associative,
 )
+from ZMPY3D_JAX.lib.batched_descriptor import (
+    _calculate_rotation_batch,
+    _calculate_rotation_flat_batch,
+)
 
 
 def test_segmented_sum_matches_numpy_add_at():
@@ -85,9 +89,11 @@ class TestCalculateZMByABRotation:
         rng = np.random.default_rng(2026)
         zm = np.full((7, 7, 7), np.nan + 0j, dtype=complex)
         for n in range(7):
-            for l in range(n + 1):
-                if (n - l) % 2 == 0:
-                    zm[n, l, : l + 1] = rng.normal(size=l + 1) + 1j * rng.normal(size=l + 1)
+            for ell in range(n + 1):
+                if (n - ell) % 2 == 0:
+                    zm[n, ell, : ell + 1] = rng.normal(
+                        size=ell + 1
+                    ) + 1j * rng.normal(size=ell + 1)
         return zm
 
     @pytest.fixture
@@ -100,6 +106,26 @@ class TestCalculateZMByABRotation:
             ],
             dtype=complex,
         )
+
+    def test_flattened_batch_matches_nested(self, zm_raw, ab_list, cache_data):
+        raw = jnp.stack((jnp.asarray(zm_raw), jnp.asarray(zm_raw)))
+        pairs = jnp.stack((jnp.asarray(ab_list), jnp.asarray(ab_list)))
+        args = (
+            cache_data["max_order"],
+            cache_data["BinomialCache"],
+            cache_data["CLMCache"],
+            cache_data["s_id"],
+            cache_data["n"],
+            cache_data["l"],
+            cache_data["m"],
+            cache_data["mu"],
+            cache_data["k"],
+            cache_data["IsNLM_Value"],
+            "segmented_scan",
+        )
+        nested = _calculate_rotation_batch(raw, pairs, *args)
+        flattened = _calculate_rotation_flat_batch(raw, pairs, *args)
+        np.testing.assert_array_equal(flattened, nested)
 
     def test_basic_rotation(self, zm_raw, ab_list, cache_data):
         """Test basic ZM rotation calculation."""

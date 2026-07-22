@@ -444,11 +444,11 @@ batch size 2 it improves 1.890 to 1.285 ms/protein, or 45.9%. The prepared batch
 compiled descriptor runner per invocation and reuses it across chunks; direct descriptor calls
 retain their validation wrapper and existing behavior.
 
-The compact candidate profile identified the two odd-order companion eigensolves as avoidable GPU
-work. Replacing them with a stable analytic quadratic reduced batch-16 candidate generation from
-0.145 to 0.004 ms/protein for order 3 and from 0.140 to 0.003 ms/protein for order 5. Their fused
-normalization methods measure 0.087 and 0.089 ms/protein. Grouping the even order-2/order-4
-companion eigensolves measured 0.480 ms/protein versus 0.481 separately and was not promoted.
+The analytic odd-root experiment reduced batch-16 candidate generation from 0.145 to 0.004
+ms/protein for order 3 and from 0.140 to 0.003 ms/protein for order 5, but production has restored
+companion roots to preserve the exact formulation. Grouping the order-2/order-4 companion solves
+measured 0.480 ms/protein versus 0.481 separately and remains benchmark-only because it did not
+meet the 5% promotion gate.
 
 The order-20 CUDA numerical suite remains bitwise repeatable and preserves the accepted 6NT5/6NT6
 metrics: similarity-score error `0.0029475`, pair-difference cosine `0.9997608`, and separation
@@ -456,6 +456,33 @@ ratio `0.9994425`.
 
 Structured results overwrite:
 `batched_pipeline_profile_{cpu,gpu}.json` in the benchmark results directory.
+
+### Schema-v7 companion-layout promotion results
+
+Two clean RTX 3090 runs used 9 samples with 3 repeats. One CPU run used 5 samples with 1 repeat.
+All runs used alternating 6NT5/6NT6 inputs, order 20, and batch sizes 2 and 16.
+
+| Batch-16 normalization | GPU run 1 ms/protein | GPU run 2 ms/protein | CPU ms/protein |
+| --- | ---: | ---: | ---: |
+| Per-order companion | 1.3777 | 1.3747 | 74.639 |
+| Degree-grouped companion, nested rotation | 1.2873 | 1.2817 | 74.734 |
+| Degree-grouped companion, flattened rotation | 1.3115 | 1.2992 | 101.876 |
+
+Degree grouping with nested rotation improved GPU throughput by `7.02%` and `7.26%`, passing the
+5% gate in both runs. GPU batch-2 gains were `8.80%` and `6.64%`; CPU batch 2 improved `12.3%`.
+The CPU batch-16 change was a `0.13%` slowdown, safely inside the 10% guard. Flattened rotation
+alone was `2.15%` and `2.60%` slower on GPU and approximately `98%` slower on CPU, so it was not
+promoted.
+
+Prefetch improved batch-16 prepared throughput by only `0.37%` and `1.38%` on GPU and `0.71%` on
+CPU, below the 10% gate. Sequential host preparation remains the production default.
+
+The focused CUDA regression/determinism suite passed all six tests. Order-20 6NT5/6NT6 retained
+score error `0.00294755`, difference cosine `0.99976075`, separation ratio `0.99944251`, candidate
+counts `8/4/8/4`, and five-run bitwise repeatability for direct and whole-JIT paths. Isolated
+batch-16 allocator peaks were `303,990,784` bytes per-order and `378,566,400` bytes grouped, a
+`24.53%` increase that passes the 25% gate. Degree grouping with nested rotation is now the
+production whole-pipeline default.
 
 ## Previous Batched Stage Profile
 
@@ -494,12 +521,11 @@ a material end-to-end benefit.
 
 ### 2. Profile the remaining even candidate and rotation kernels
 
-The odd companion solves and invalid-slot work have been removed. On the RTX 3090 at batch 16,
-even-order companion candidate generation and deterministic rotation are now tied at approximately
-0.48 and 0.47 ms/protein. Use the saved JAX/Nsight trace to distinguish eigensolver and rotation
-kernel limits before attempting an analytic quartic or changing the rotation arithmetic. Host
-voxelization should be treated separately because it dominates prepared end-to-end latency but not
-device throughput.
+All production primary roots use companion solves. On the RTX 3090 at batch 16, even-order
+companion candidate generation and deterministic rotation measured approximately 0.48 and 0.47
+ms/protein. Use the saved JAX/Nsight trace to distinguish eigensolver and rotation limits; do not
+introduce an analytic quartic. Host prefetch is a separately gated benchmark phase because host
+voxelization dominates prepared end-to-end latency but not device throughput.
 
 ### 3. Establish baselines only after optimization
 
@@ -507,6 +533,41 @@ Continue logging timing without a pass/fail threshold until the stage profiler a
 are stable. If a performance gate is later added, store baselines by CPU model and compare robust
 medians with a generous noise allowance. Numerical parity must remain the only portable regression
 gate for now.
+
+## Order-20 bottleneck profile (2026-07-22)
+
+The synchronized schema-v7 stage profile was rerun with production mixed precision at batches 1, 2,
+and 16, using two repeats and three samples per repeat. CPU and GPU runs both passed all three
+workloads. CPU order-20 rotation is the dominant staged cost: order-2/order-4 ZM rotation ranked
+first at batches 1/2/16, contributing 27.9%, 31.8%, and 27.1% of synchronized stage time. Their
+combined contribution was approximately 54%, 62%, and 52%, respectively. Host preparation was only
+5.0 ms, 10.2 ms, and 81.6 ms per batch, so it does not explain the warmed CPU device-core gap.
+
+GPU order-20 scales better with batching. At batch 16, order-2/order-4 candidate generation ranked
+first at 0.252 and 0.239 ms/protein (17.1% and 16.2%); order-2/order-4 rotation followed at 0.148
+and 0.148 ms/protein (about 10% each). At batches 1 and 2, order-2 rotation ranked first, with
+order-4 rotation second. Host preparation was 5.7 ms, 10.5 ms, and 86.4 ms per batch, while warmed
+device core was 2.631, 1.861, and 1.295 ms/protein for batches 1, 2, and 16.
+
+The JAX profiler trace for the production batch-16 run is stored at
+`/tmp/zmpy3d_jax_trace/gpu_order20_batch16/plugins/profile/2026_07_22_12_49_26/`. A targeted
+Nsight Systems worker capture is `/tmp/zmpy3d_nsys_worker_order20_batch16.nsys-rep`, with exported
+kernel and API summaries under `/tmp/zmpy3d_nsys_worker_stats_*`. Excluding the profiling-only
+redzone allocator kernel, the CUDA timeline is led by fused GEMM kernels (14.3% and 4.2%),
+double-precision GEMM (7.6%), and cuSolver companion eigensolve kernels such as `gebal` (5.9%),
+complex GEMV (4.6%), and triangular-vector work (2.4%). The CUDA API view also shows synchronization
+and asynchronous copies dominating host-side API time, so kernel percentages must not be added to
+the synchronized stage percentages.
+
+The first Nsight capture wrapped the complete diagnostic benchmark and was intentionally rejected for
+kernel attribution because compilation/probe variants dominated it. The isolated production worker
+capture is the authoritative CUDA kernel profile. The next optimization target is mask-aware order-2/
+order-4 candidate and rotation execution, with CPU rotation dispatch as the first validation target;
+no analytic quartic or primary-root strategy change is justified by this profile. “Mask-aware” here is
+a computational layout/kernel optimization, not an analytic root optimization: companion eigensolves,
+candidate values, rotation equations, masks, and deterministic segmented-reduction order remain the
+same. The implementation may skip or compact known-invalid fixed slots before rotation, but it must
+preserve valid-slot outputs and all existing accuracy, mask, count, and repeatability gates.
 
 ## Commands
 

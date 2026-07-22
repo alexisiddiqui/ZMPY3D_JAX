@@ -258,7 +258,7 @@ def calculate_ab_rotation_candidates(
 def calculate_ab_rotation_compact_candidates(
     z_moment_raw: chex.Array,
     target_order2_norm_rotate: int,
-    root_strategy: str = "analytic_odd",
+    root_strategy: str = "companion",
 ) -> ABRotationCandidates:
     """Generate only the two useful secondary roots per initial root."""
     z_moment_raw = jnp.asarray(z_moment_raw, dtype=_config.COMPLEX_DTYPE)
@@ -290,7 +290,7 @@ def calculate_ab_rotation_compact_candidate_group(
     if root_strategy == "analytic_odd" and target_orders[0] % 2 == 1:
         roots = jax.vmap(_stable_quadratic_roots)(coefficients)
     else:
-        roots = jax.vmap(_eigen_root_jax)(coefficients)
+        roots = batched_eigen_root(coefficients)
     a, b, is_valid = jax.vmap(
         lambda item_roots: _compute_compact_ab_candidates_impl(
             z_moment_raw, item_roots, 2

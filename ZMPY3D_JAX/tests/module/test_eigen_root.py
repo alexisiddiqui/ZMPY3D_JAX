@@ -11,6 +11,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 import ZMPY3D_JAX as z
+from ZMPY3D_JAX.lib.eigen_root import batched_eigen_root
 
 z.configure_for_scientific_computing()
 print(f"JAX FLOAT_DTYPE after configuration: {z.FLOAT_DTYPE}")
@@ -90,3 +91,23 @@ class TestEigenRoot:
         chex.assert_shape(roots_jnp, (5,))
         expected = jnp.array([1.0, 2.0, 3.0, 4.0, 5.0], dtype=roots_jnp.dtype)
         chex.assert_trees_all_close(jnp.sort(roots_jnp), jnp.sort(expected), atol=1e-8)
+
+    def test_batched_solver_accepts_arbitrary_leading_dimensions(self):
+        coefficients = jnp.asarray(
+            [[[[1, -3, 2], [1, 0, 1]], [[1, -2, 1], [0, 2, 1]]]],
+            dtype=z.COMPLEX_DTYPE,
+        )
+        roots = batched_eigen_root(coefficients)
+
+        assert roots.shape == (1, 2, 2, 2)
+        for index in np.ndindex(coefficients.shape[:-1]):
+            if coefficients[index][0] == 0:
+                assert bool(jnp.all(jnp.isnan(roots[index])))
+            else:
+                expected = z.eigen_root(coefficients[index])
+                np.testing.assert_allclose(
+                    np.sort_complex(np.asarray(roots[index])),
+                    np.sort_complex(np.asarray(expected)),
+                    rtol=0,
+                    atol=1e-5,
+                )

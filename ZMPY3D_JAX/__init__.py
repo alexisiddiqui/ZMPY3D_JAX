@@ -48,6 +48,7 @@ from .lib.calculate_zm_by_ab_rotation01 import (
     calculate_zm_by_ab_rotation01 as calculate_zm_by_ab_rotation,
     prepare_zm_rotation_cache as prepare_zm_rotation_cache,
 )
+from .lib.eigen_root import batched_eigen_root as batched_eigen_root
 from .lib.eigen_root import eigen_root as eigen_root
 from .lib.descriptor_assembly import (
     DescriptorAssemblyCache as DescriptorAssemblyCache,

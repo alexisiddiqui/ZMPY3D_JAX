@@ -1,0 +1,13 @@
+[project]
+name = "zmpy3d-tensorflow-benchmark"
+version = "0.0.0"
+requires-python = ">=3.13,<3.14"
+dependencies = [
+  "numpy>=1.23.5",
+  "tensorflow[and-cuda]==2.20.0",
+  "tensorflow-probability[tf]==0.25.0",
+  "pytest",
+]
+
+[tool.uv]
+package = false

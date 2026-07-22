@@ -138,9 +138,9 @@ invalid values remain represented by the mask so descriptor assembly can stay JI
 likewise return JAX scalar arrays (or stacked one-dimensional arrays for batch calls). Console
 entry points transfer and compact results only when printing.
 
-Batch descriptor calculation uses bounded, input-order device batches. Host voxelization remains
-sequential; each chunk is high-side zero-padded to its largest voxel shape, transferred once, and
-processed together through descriptor assembly and normalization rotation:
+Batch descriptor calculation uses bounded, input-order device batches. Production host preparation
+remains sequential pending the prefetch promotion gate. The internal benchmark can compare it with
+a bounded two-chunk thread-pool prototype that preserves input order and propagates worker errors:
 
 ```python
 batch = z.ZMPY3D_CLI_BatchZM(
@@ -286,12 +286,13 @@ env -u LD_LIBRARY_PATH ZMPY3D_BENCHMARK_BACKEND=gpu \
 By default it profiles the production float32/mixed-precision order-20 path with alternating
 6NT5/6NT6 fixtures at batch sizes 2 and 16. Override these with `ZMPY3D_BATCH_SIZES` and
 `ZMPY3D_BATCH_MAX_ORDER`, and control sampling with `ZMPY3D_BATCH_REPEATS` and
-`ZMPY3D_BATCH_SAMPLES`. The schema-v6 JSON separates host preparation, transfer, first compilation,
+`ZMPY3D_BATCH_SAMPLES`. The schema-v7 JSON separates host preparation, transfer, first compilation,
 warmed device-core throughput, whole-pipeline JIT throughput, prepared end-to-end throughput, and
 production Mode 0/1/2 timings. It records both fused normalization methods and a diagnostic split
 of compact AB candidates, rotation, invariant reduction, moments, 3DZD, and assembly. Candidate
-solver probes retain the companion eigensolver as an oracle and compare the analytic odd-order
-solver and grouped even-order solve. Stage timings are synchronized diagnostics and should not be
+solver probes compare per-order and degree-grouped companion layouts, nested and flattened
+rotation, and the benchmark-only analytic odd-order experiment. Stage timings are synchronized
+diagnostics and should not be
 summed to reconstruct fused device-core latency.
 
 Set `ZMPY3D_BATCH_TRACE_DIR` to capture one warmed separate-pipeline and whole-JIT execution for
@@ -306,9 +307,27 @@ ZMPY3D_JAX/tests/benchmark/_simple_time_benchmark/batched_pipeline_profile_{cpu,
 Use `ZMPY3D_BATCH_BENCHMARK_OUTPUT` to select another output directory. As with the single-protein
 harness, results are informational and numerical parity is checked before timing.
 
-Production compact normalization uses a stable analytic quadratic for the initial odd-order roots;
-even orders retain the companion-matrix eigensolver. The prepared batch CLI compiles the complete
-device descriptor path once and reuses it across chunks and compatible input shapes.
+Production compact normalization uses companion-matrix eigensolves for every initial polynomial.
+The exact secondary quartic factorization retains only its two useful real roots. The analytic
+odd-order quadratic remains an explicit benchmark experiment, not a production default. The
+prepared batch CLI compiles the complete device descriptor path once and reuses it across chunks
+and compatible input shapes.
+
+Production uses degree-grouped companion normalization with nested rotation. The schema-v7
+promotion measurements on an RTX 3090 found degree-grouped companion normalization
+`7.02%` and `7.26%` faster than per-order companion normalization at batch 16 across two clean
+runs. It also improved GPU batch 2 and CPU batch 2, while CPU batch 16 was effectively neutral
+(`0.13%` slower, within the 10% guard). Nested rotation remains preferred: the flattened prototype
+was slower on both GPU and CPU. Host prefetch improved prepared throughput by at most `1.38%` on
+GPU and `0.71%` on CPU, below its 10% gate, so production host preparation remains sequential.
+
+Isolated batch-16 CUDA allocator measurements recorded `303,990,784` bytes peak for per-order
+companion normalization and `378,566,400` bytes for degree grouping. The `24.53%` increase passes
+the 25% memory-growth gate.
+
+The focused CUDA regression suite passed all six tests. Order-20 6NT5/6NT6 retained score error
+`0.00294755`, difference cosine `0.99976075`, separation ratio `0.99944251`, candidate counts
+`8/4/8/4`, and bitwise repeatability over five direct and whole-JIT executions.
 
 Run a focused module test:
 
@@ -317,6 +336,37 @@ pytest ZMPY3D_JAX/tests/module/test_calculate_bbox_moment.py
 ```
 
 The upstream submodule is intended for parity checks. A useful next validation target is a golden-test suite that computes fixtures with `externals/ZMPY3D` and compares this package within explicit tolerances.
+
+### Pinned TensorFlow comparison benchmark
+
+The repository also includes the pinned TensorFlow reference at `externals/ZMPY3D_TF`:
+
+```bash
+git submodule update --init --recursive
+uv sync --project ZMPY3D_JAX/tests/benchmark/tensorflow_env
+```
+
+Run the optional benchmark in a separate process for each framework. It reports both the production
+JAX mixed-precision view and an x64-matched view against TensorFlow 2.20:
+
+```bash
+env -u LD_LIBRARY_PATH ZMPY3D_TF_BENCHMARK_BACKEND=gpu \
+  ZMPY3D_TF_BENCHMARK_ORDERS=6,20 ZMPY3D_TF_BENCHMARK_BATCHES=1,2,16 \
+  ZMPY3D_TF_BENCHMARK_SAMPLES=3 ZMPY3D_TF_BENCHMARK_REPEATS=2 \
+  uv run --no-sync pytest -q -m benchmark \
+  ZMPY3D_JAX/tests/benchmark/test_benchmark_tensorflow.py
+```
+
+Set `ZMPY3D_TF_BENCHMARK_BACKEND=cpu` for CPU and `ZMPY3D_TF_PYTHON` when the TensorFlow
+environment is elsewhere. Singular `ZMPY3D_TF_BENCHMARK_ORDER` and `ZMPY3D_TF_BENCHMARK_BATCH`
+controls remain available for smoke runs. Each repeat launches fresh framework processes; each
+sample is a synchronized post-warmup measurement inside its worker. The TensorFlow reference
+processes structures independently through its `tf.data` generator, whereas JAX uses true padded
+device batches. Compare core timings as reference-implementation throughput and treat public
+end-to-end timings as workflow measurements rather than interchangeable isolated kernels. Reports
+include every descriptor row, compile time, framework/device metadata, error metrics, and are
+written under `ZMPY3D_JAX/tests/benchmark/_tensorflow` or the directory selected by
+`ZMPY3D_TF_BENCHMARK_OUTPUT`.
 
 ## Package Layout
 

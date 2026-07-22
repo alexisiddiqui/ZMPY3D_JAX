@@ -34,6 +34,8 @@ from ZMPY3D_JAX.lib.batched_descriptor import (  # noqa: E402
     _calculate_ab_compact_candidate_group_batch,
     _calculate_ab_compact_candidates_batch,
     _calculate_normalized_mean_compact_batch,
+    _calculate_rotation_batch,
+    _calculate_rotation_flat_batch,
     calculate_descriptor_batch_from_voxels,
     calculate_descriptor_batch_staged,
     pad_voxel_batch,
@@ -64,8 +66,10 @@ NORMALIZATION_STAGE_PREFIXES = (
 )
 NORMALIZATION_REPRESENTATIONS = (
     "full_fixed",
+    "companion_compact",
+    "companion_compact_grouped",
+    "companion_compact_grouped_flat",
     "analytic_compact",
-    "analytic_compact_parity",
 )
 ROTATION_REDUCTIONS = ("scatter", "segmented_scan")
 MOMENT_REDUCTIONS = ("production_auto",)
@@ -253,7 +257,7 @@ def _run_core(
     voxels: jax.Array,
     runtime: _BatchZMRuntime,
     mode: int = 2,
-    normalization_representation: str = "analytic_compact",
+    normalization_representation: str = "companion_compact_grouped",
     rotation_reduction: str = "auto",
     moment_reduction: str = "auto",
 ) -> z.DescriptorVector:
@@ -299,7 +303,7 @@ def _run_staged_core(
         rotation_cache=runtime.rotation_cache,
         descriptor_cache=runtime.descriptor_cache,
         stage_executor=stage_executor,
-        normalization_representation="analytic_compact",
+        normalization_representation="companion_compact",
     )
 
 
@@ -400,7 +404,7 @@ def _summarize_stage_profile(
 
 
 def _validate_payload(payload: dict[str, Any]) -> None:
-    assert payload["schema_version"] == 6
+    assert payload["schema_version"] == 7
     assert payload["configuration"]["batch_sizes"]
     for workload in payload["results"]["workloads"].values():
         assert 0 < workload["padding_utilization"] <= 1
@@ -767,6 +771,41 @@ def test_batched_pipeline_throughput_snapshot() -> None:
         candidate_solver_samples = _sample_functions(
             candidate_solver_functions, repeats=repeats, sample_count=sample_count
         )
+        rotation_candidates = _calculate_ab_compact_candidates_batch(
+            raw, 2, "companion"
+        )
+        rotation_arguments = (
+            raw,
+            rotation_candidates.pairs,
+            rotation.max_order,
+            rotation.binomial,
+            rotation.clm,
+            rotation.s_id,
+            rotation.n,
+            rotation.l,
+            rotation.m,
+            rotation.mu,
+            rotation.k,
+            rotation.is_nlm_value,
+            "auto",
+        )
+        rotation_layout_functions = {
+            "nested": lambda: _calculate_rotation_batch(*rotation_arguments),
+            "flattened": lambda: _calculate_rotation_flat_batch(*rotation_arguments),
+        }
+        rotation_layout_results = {
+            name: function() for name, function in rotation_layout_functions.items()
+        }
+        block_tree(rotation_layout_results)
+        np.testing.assert_array_equal(
+            np.asarray(rotation_layout_results["flattened"]),
+            np.asarray(rotation_layout_results["nested"]),
+        )
+        rotation_layout_samples = _sample_functions(
+            rotation_layout_functions,
+            repeats=repeats,
+            sample_count=sample_count,
+        )
         odd_normalization_functions = {}
         for order in (3, 5):
             for strategy in ("companion", "analytic_odd"):
@@ -835,6 +874,19 @@ def test_batched_pipeline_throughput_snapshot() -> None:
                 descriptor_runner=prepared_runner,
             )
 
+        def prefetched_end_to_end():
+            return _run_prepared_batch(
+                paths,
+                grid_width=1.0,
+                max_order=MAX_ORDER,
+                max_target_order=MAX_TARGET_ORDER,
+                mode=2,
+                batch_size=batch_size,
+                runtime=runtime,
+                descriptor_runner=prepared_runner,
+                prefetch=True,
+            )
+
         prepared_runner = _prepare_descriptor_runner(
             max_order=MAX_ORDER,
             max_target_order=MAX_TARGET_ORDER,
@@ -843,9 +895,16 @@ def test_batched_pipeline_throughput_snapshot() -> None:
         )
         sequential_end_to_end()
         batched_end_to_end()
+        prefetched_end_to_end()
         end_to_end_samples = _sample_pair(
             sequential_end_to_end,
             batched_end_to_end,
+            repeats=repeats,
+            sample_count=sample_count,
+        )
+        prefetch_samples = _sample_pair(
+            batched_end_to_end,
+            prefetched_end_to_end,
             repeats=repeats,
             sample_count=sample_count,
         )
@@ -901,13 +960,20 @@ def test_batched_pipeline_throughput_snapshot() -> None:
                     for name, samples in odd_normalization_samples.items()
                 },
             },
+            "rotation_layout_profile": {
+                name: _summary(samples, batch_size)
+                for name, samples in rotation_layout_samples.items()
+            },
             "prepared_end_to_end": _comparison(
                 *end_to_end_samples, protein_count=batch_size
+            ),
+            "host_prefetch": _comparison(
+                *prefetch_samples, protein_count=batch_size
             ),
         }
 
     payload = {
-        "schema_version": 6,
+        "schema_version": 7,
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
         "comparison_mode": "informational",
         "configuration": {

@@ -200,7 +200,7 @@ def _calculate_ab_candidates_batch(raw_moments: chex.Array, target_order: int):
 def _calculate_ab_compact_candidates_batch(
     raw_moments: chex.Array,
     target_order: int,
-    root_strategy: str = "analytic_odd",
+    root_strategy: str = "companion",
 ):
     return jax.vmap(
         lambda raw: calculate_ab_rotation_compact_candidates(
@@ -255,6 +255,54 @@ def _calculate_rotation_batch(
             reduction_strategy,
         )
     )(raw_moments, pairs)
+
+
+@partial(jax.jit, static_argnums=(2, 12))
+def _calculate_rotation_flat_batch(
+    raw_moments: chex.Array,
+    pairs: chex.Array,
+    max_order: int,
+    binomial: chex.Array,
+    clm: chex.Array,
+    s_id: chex.Array,
+    n: chex.Array,
+    ell: chex.Array,
+    m: chex.Array,
+    mu: chex.Array,
+    k: chex.Array,
+    is_nlm_value: chex.Array,
+    reduction_strategy: str = "auto",
+) -> chex.Array:
+    """Candidate-parallel rotation prototype with a flattened leading layout.
+
+    The protein and candidate axes are flattened before entering the rotation
+    kernel and restored afterwards.  Term order, identity handling and the
+    deterministic segmented reduction are therefore identical to the nested
+    production implementation.
+    """
+    protein_count, candidate_count = pairs.shape[:2]
+    flat_pairs = pairs.reshape((-1, 2))
+    flat_raw = jnp.repeat(raw_moments, candidate_count, axis=0)
+
+    def rotate_one(raw, pair):
+        return _calculate_zm_by_ab_rotation_jax(
+            raw,
+            binomial,
+            pair[None, :],
+            max_order,
+            clm,
+            s_id,
+            n,
+            ell,
+            m,
+            mu,
+            k,
+            is_nlm_value,
+            reduction_strategy,
+        )[0]
+
+    rotated = jax.vmap(rotate_one)(flat_raw, flat_pairs)
+    return rotated.reshape((protein_count, candidate_count) + rotated.shape[1:])
 
 
 @jax.jit
@@ -318,7 +366,7 @@ def _calculate_normalized_mean_compact_batch(
     k: chex.Array,
     is_nlm_value: chex.Array,
     reduction_strategy: str = "auto",
-    candidate_root_strategy: str = "analytic_odd",
+    candidate_root_strategy: str = "companion",
 ) -> chex.Array:
     candidates = _calculate_ab_compact_candidates_batch(
         raw_moments, target_order, candidate_root_strategy
@@ -341,7 +389,7 @@ def _calculate_normalized_mean_compact_batch(
     return _calculate_masked_mean_batch(rotated, candidates.is_valid)
 
 
-@partial(jax.jit, static_argnums=(1, 3, 12))
+@partial(jax.jit, static_argnums=(1, 3, 12, 13))
 def _calculate_normalized_means_parity_batch(
     raw_moments: chex.Array,
     target_orders: tuple[int, ...],
@@ -356,20 +404,14 @@ def _calculate_normalized_means_parity_batch(
     k: chex.Array,
     is_nlm_value: chex.Array,
     reduction_strategy: str = "auto",
+    flattened_rotation: bool = False,
 ) -> chex.Array:
     """Fuse same-capacity compact orders into one candidate/rotation executable."""
-    pairs = []
-    masks = []
-    for target_order in target_orders:
-        candidates = jax.vmap(
-            lambda raw, order=target_order: (
-                calculate_ab_rotation_compact_candidates(raw, order)
-            )
-        )(raw_moments)
-        pairs.append(candidates.pairs)
-        masks.append(candidates.is_valid)
-    pair_groups = jnp.stack(pairs, axis=1)
-    mask_groups = jnp.stack(masks, axis=1)
+    candidates = _calculate_ab_compact_candidate_group_batch(
+        raw_moments, target_orders, "companion"
+    )
+    pair_groups = candidates.pairs
+    mask_groups = candidates.is_valid
 
     def rotate_item(raw, item_pair_groups):
         return jax.vmap(
@@ -390,7 +432,30 @@ def _calculate_normalized_means_parity_batch(
             )
         )(item_pair_groups)
 
-    rotated = jax.vmap(rotate_item)(raw_moments, pair_groups)
+    if flattened_rotation:
+        rotated = jnp.stack(
+            [
+                _calculate_rotation_flat_batch(
+                    raw_moments,
+                    pair_groups[:, index],
+                    max_order,
+                    binomial,
+                    clm,
+                    s_id,
+                    n,
+                    ell,
+                    m,
+                    mu,
+                    k,
+                    is_nlm_value,
+                    reduction_strategy,
+                )
+                for index in range(len(target_orders))
+            ],
+            axis=1,
+        )
+    else:
+        rotated = jax.vmap(rotate_item)(raw_moments, pair_groups)
     keep = mask_groups[..., None, None, None]
     values = jnp.where(keep, jnp.abs(rotated), 0)
     valid_count = jnp.sum(mask_groups, axis=2)[..., None, None, None]
@@ -417,7 +482,7 @@ def _calculate_normalization_means(
         rotation_cache.k,
         rotation_cache.is_nlm_value,
     )
-    if representation in ("full_fixed", "analytic_compact"):
+    if representation in ("full_fixed", "analytic_compact", "companion_compact"):
         function = (
             _calculate_normalized_mean_batch
             if representation == "full_fixed"
@@ -425,7 +490,21 @@ def _calculate_normalization_means(
         )
         return jnp.stack(
             [
-                function(raw, target_order, *arguments, reduction_strategy)
+                (
+                    function(
+                        raw,
+                        target_order,
+                        *arguments,
+                        reduction_strategy,
+                        (
+                            "analytic_odd"
+                            if representation == "analytic_compact"
+                            else "companion"
+                        ),
+                    )
+                    if representation in ("analytic_compact", "companion_compact")
+                    else function(raw, target_order, *arguments, reduction_strategy)
+                )
                 for target_order in target_orders
             ],
             axis=1,
@@ -436,7 +515,11 @@ def _calculate_normalization_means(
         parity_orders = tuple(order for order in target_orders if order % 2 == parity)
         if parity_orders:
             parity_means = _calculate_normalized_means_parity_batch(
-                raw, parity_orders, *arguments, reduction_strategy
+                raw,
+                parity_orders,
+                *arguments,
+                reduction_strategy,
+                representation == "companion_compact_grouped_flat",
             )
             for index, order in enumerate(parity_orders):
                 by_order[order] = parity_means[:, index]
@@ -493,7 +576,7 @@ def calculate_descriptor_batch_from_voxels(
     x64_bbox_to_zm_cache: BBoxToZMCache | None = None,
     rotation_cache: ZMRotationCache,
     descriptor_cache: DescriptorAssemblyCache,
-    normalization_representation: str = "analytic_compact",
+    normalization_representation: str = "companion_compact_grouped",
     rotation_reduction: str = "auto",
     moment_reduction: str = "auto",
     moment_precision: str = "auto",
@@ -510,7 +593,10 @@ def calculate_descriptor_batch_from_voxels(
     if normalization_representation not in (
         "full_fixed",
         "analytic_compact",
+        "companion_compact",
         "analytic_compact_parity",
+        "companion_compact_grouped",
+        "companion_compact_grouped_flat",
     ):
         raise ValueError("unknown normalization representation")
     if rotation_reduction not in ("auto", "scatter", "segmented_scan"):
@@ -609,7 +695,7 @@ def calculate_descriptor_batch_staged(
     rotation_cache: ZMRotationCache,
     descriptor_cache: DescriptorAssemblyCache,
     stage_executor: StageExecutor | None = None,
-    normalization_representation: str = "analytic_compact",
+    normalization_representation: str = "companion_compact",
     rotation_reduction: str = "auto",
     moment_reduction: str = "auto",
     moment_precision: str = "auto",
@@ -627,10 +713,12 @@ def calculate_descriptor_batch_staged(
         raise ValueError("unknown rotation reduction")
     if moment_reduction not in ("auto", "scatter", "segmented_scan"):
         raise ValueError("unknown moment reduction")
-    if normalization_representation not in ("full_fixed", "analytic_compact"):
+    if normalization_representation not in (
+        "full_fixed", "analytic_compact", "companion_compact"
+    ):
         raise ValueError(
             "staged normalization representation must be 'full_fixed' or "
-            "'analytic_compact'"
+            "'analytic_compact', or 'companion_compact'"
         )
     use_mixed_moments = _uses_mixed_moments(max_order, moment_precision)
     if use_mixed_moments:

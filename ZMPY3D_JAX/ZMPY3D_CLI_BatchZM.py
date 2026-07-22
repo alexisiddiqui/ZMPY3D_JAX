@@ -22,6 +22,7 @@
 
 
 import argparse
+from concurrent.futures import Future, ThreadPoolExecutor
 import os
 import pickle
 from functools import partial
@@ -151,6 +152,7 @@ def _run_prepared_batch(
     batch_size: int,
     runtime: _BatchZMRuntime,
     descriptor_runner=None,
+    prefetch: bool = False,
 ) -> z.DescriptorVector:
     if not paths:
         width = _descriptor_width(mode, max_target_order, runtime.descriptor_cache)
@@ -167,10 +169,9 @@ def _run_prepared_batch(
             runtime=runtime,
         )
 
-    chunks: list[z.DescriptorVector] = []
-    for start in range(0, len(paths), batch_size):
+    def prepare_chunk(chunk_paths: Sequence[str]) -> np.ndarray:
         host_voxels = []
-        for path in paths[start : start + batch_size]:
+        for path in chunk_paths:
             xyz, residues = z.get_pdb_xyz_ca(path)
             voxel, _corner = fill_voxel_by_weight_density_host(
                 xyz,
@@ -180,11 +181,34 @@ def _run_prepared_batch(
                 runtime.residue_box[grid_width],
             )
             host_voxels.append(voxel)
+        return pad_voxel_batch(host_voxels)
 
-        voxel_batch = jnp.asarray(pad_voxel_batch(host_voxels), dtype=z.FLOAT_DTYPE)
-        chunks.append(
-            descriptor_runner(voxel_batch)
-        )
+    path_chunks = [
+        paths[start : start + batch_size]
+        for start in range(0, len(paths), batch_size)
+    ]
+    chunks: list[z.DescriptorVector] = []
+    if not prefetch or len(path_chunks) == 1:
+        prepared_chunks = map(prepare_chunk, path_chunks)
+        for prepared in prepared_chunks:
+            chunks.append(descriptor_runner(jnp.asarray(prepared, dtype=z.FLOAT_DTYPE)))
+    else:
+        # At most two padded host chunks are pending. Results are consumed in
+        # submission order, so parsing completion cannot reorder descriptors.
+        with ThreadPoolExecutor(max_workers=2, thread_name_prefix="zmpy3d-prepare") as pool:
+            pending: list[Future[np.ndarray]] = []
+            next_index = 0
+            while next_index < min(2, len(path_chunks)):
+                pending.append(pool.submit(prepare_chunk, path_chunks[next_index]))
+                next_index += 1
+            while pending:
+                prepared = pending.pop(0).result()
+                if next_index < len(path_chunks):
+                    pending.append(pool.submit(prepare_chunk, path_chunks[next_index]))
+                    next_index += 1
+                chunks.append(
+                    descriptor_runner(jnp.asarray(prepared, dtype=z.FLOAT_DTYPE))
+                )
 
     return z.DescriptorVector(
         values=jnp.concatenate([chunk.values for chunk in chunks], axis=0),

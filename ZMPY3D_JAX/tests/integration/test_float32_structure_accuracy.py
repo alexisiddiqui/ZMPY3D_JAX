@@ -118,7 +118,7 @@ def _run_worker(
     means = _calculate_normalization_means(
         raw,
         TARGET_ORDERS,
-        "analytic_compact",
+        "companion_compact_grouped",
         runtime.rotation_cache,
         "auto",
     )
@@ -314,7 +314,7 @@ def _run_worker(
         isolated_means = _calculate_normalization_means(
             reference_raw,
             TARGET_ORDERS,
-            "analytic_compact",
+            "companion_compact_grouped",
             runtime.rotation_cache,
             "auto",
         )
