@@ -569,6 +569,20 @@ candidate values, rotation equations, masks, and deterministic segmented-reducti
 same. The implementation may skip or compact known-invalid fixed slots before rotation, but it must
 preserve valid-slot outputs and all existing accuracy, mask, count, and repeatability gates.
 
+### Mask-aware order-2/order-4 optimization: closed
+
+The mask-aware experiment is closed and removed. The GPU `vmap`/`cond` design cannot skip lanes in
+the whole-JIT executable: it lowers to selection/predication rather than a smaller candidate-shaped
+rotation launch. The CPU host-bucket prototype was also removed because it cannot enter the promoted
+whole-JIT path and adds a device-to-host mask synchronization on every production-shaped call.
+
+The accepted 6NT5/6NT6 structures report full compact candidate capacity (`8/4/8/4` for orders
+2–5), so the CPU dispatcher’s only measured speedup occurred on synthetic sparse masks. The real
+GPU whole-JIT matrix showed low-batch masked deltas, but batch-16 changes were only `-0.35%` (order 6)
+and `-0.81%` (order 20), below the `5%` promotion gate. The production dense grouped companion path
+therefore remains the only implementation and benchmark baseline. Future work should target degree-4
+candidate-generation or launch-fusion costs without adding mask-dispatch forks.
+
 ## Commands
 
 Run the default correctness suite:

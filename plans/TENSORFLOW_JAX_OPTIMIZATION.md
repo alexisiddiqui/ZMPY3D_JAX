@@ -184,4 +184,7 @@ directory for subsequent reproducible runs.
 The follow-up order-20 stage profile and isolated CUDA worker trace are documented in
 `plans/PERFORMANCE_HANDOFF.md`. They identify order-2/order-4 candidate generation and ZM rotation
 as the next optimization target while preserving companion eigensolves as the production root
-strategy.
+strategy. An attempted mask-aware rotation prototype with CPU staged dispatch and a fixed-shape
+whole-JIT variant was closed: the former is outside the promoted executable and the latter cannot
+skip `vmap` lanes. The dense grouped companion path remains the sole production and benchmark
+baseline.
