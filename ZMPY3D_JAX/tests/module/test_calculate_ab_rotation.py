@@ -13,6 +13,7 @@ sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 import ZMPY3D_JAX as z  # noqa: E402
 from ZMPY3D_JAX.lib.calculate_ab_candidates_jax import (  # noqa: E402
+    calculate_ab_rotation_compact_candidate_group,
     calculate_ab_rotation_compact_candidates,
 )
 
@@ -161,6 +162,40 @@ class TestCalculateABRotation:
             np.abs(compact_pairs[:, None, :] - full_pairs[None, :, :]), axis=2
         )
         np.testing.assert_array_less(np.min(distances, axis=1), 1e-5)
+
+    @pytest.mark.parametrize("target_order", (3, 5))
+    def test_analytic_odd_candidates_match_companion_roots(
+        self, real_protein_zm, target_order
+    ):
+        companion = calculate_ab_rotation_compact_candidates(
+            real_protein_zm, target_order, "companion"
+        )
+        analytic = calculate_ab_rotation_compact_candidates(
+            real_protein_zm, target_order, "analytic_odd"
+        )
+        companion_pairs = np.asarray(companion.pairs)[np.asarray(companion.is_valid)]
+        analytic_pairs = np.asarray(analytic.pairs)[np.asarray(analytic.is_valid)]
+
+        assert analytic_pairs.shape == companion_pairs.shape
+        distances = np.max(
+            np.abs(analytic_pairs[:, None, :] - companion_pairs[None, :, :]), axis=2
+        )
+        np.testing.assert_array_less(np.min(distances, axis=1), 1e-5)
+
+    def test_grouped_even_candidates_match_separate_orders(self, real_protein_zm):
+        grouped = calculate_ab_rotation_compact_candidate_group(
+            real_protein_zm, (2, 4)
+        )
+        for index, order in enumerate((2, 4)):
+            separate = calculate_ab_rotation_compact_candidates(
+                real_protein_zm, order
+            )
+            np.testing.assert_allclose(
+                grouped.pairs[index], separate.pairs, rtol=1e-14, atol=1e-14
+            )
+            np.testing.assert_array_equal(
+                grouped.is_valid[index], separate.is_valid
+            )
 
     def test_compact_candidates_mask_degenerate_moments(self):
         zero_zm = np.zeros((7, 7, 13), dtype=complex)

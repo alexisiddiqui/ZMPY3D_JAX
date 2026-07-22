@@ -24,8 +24,10 @@
 import argparse
 import os
 import pickle
+from functools import partial
 from typing import Any, NamedTuple, Sequence
 
+import jax
 import jax.numpy as jnp
 import numpy as np
 
@@ -44,6 +46,7 @@ class _BatchZMRuntime(NamedTuple):
     residue_box: dict[float, Any]
     rotation_cache: z.ZMRotationCache
     bbox_to_zm_cache: z.BBoxToZMCache
+    x64_bbox_to_zm_cache: z.BBoxToZMCache | None
     descriptor_cache: z.DescriptorAssemblyCache
 
 
@@ -77,11 +80,30 @@ def _prepare_batch_runtime(grid_width: float, max_order: int) -> _BatchZMRuntime
         cache["GCache_complex_index"],
         cache["CLMCache3D"],
     )
+    x64_bbox_to_zm_cache = None
+    if z.FLOAT_DTYPE == jnp.float32 and max_order >= 20:
+        jax.config.update("jax_enable_x64", True)
+        x64_bbox_to_zm_cache = z.BBoxToZMCache(
+            max_order=max_order,
+            g_coefficients=jnp.asarray(
+                cache["GCache_complex"], dtype=jnp.complex128
+            ).reshape(-1),
+            pqr_indices=jnp.asarray(
+                cache["GCache_pqr_linear"], dtype=jnp.int32
+            ).reshape(-1)
+            - 1,
+            output_indices=jnp.asarray(
+                cache["GCache_complex_index"], dtype=jnp.int32
+            ).reshape(-1)
+            - 1,
+            clm=jnp.asarray(cache["CLMCache3D"], dtype=jnp.complex128),
+        )
     return _BatchZMRuntime(
         param=param,
         residue_box=z.get_residue_gaussian_density_cache(param),
         rotation_cache=rotation_cache,
         bbox_to_zm_cache=bbox_to_zm_cache,
+        x64_bbox_to_zm_cache=x64_bbox_to_zm_cache,
         descriptor_cache=z.prepare_descriptor_assembly_cache(max_order),
     )
 
@@ -96,6 +118,29 @@ def _descriptor_width(
     return width
 
 
+def _prepare_descriptor_runner(
+    *,
+    max_order: int,
+    max_target_order: int,
+    mode: int,
+    runtime: _BatchZMRuntime,
+):
+    """Compile the complete device pipeline as one reusable batch executable."""
+    return jax.jit(
+        partial(
+            calculate_descriptor_batch_from_voxels,
+            max_order=max_order,
+            max_target_order=max_target_order,
+            mode=mode,
+            default_radius_multiplier=runtime.param["default_radius_multiplier"],
+            bbox_to_zm_cache=runtime.bbox_to_zm_cache,
+            x64_bbox_to_zm_cache=runtime.x64_bbox_to_zm_cache,
+            rotation_cache=runtime.rotation_cache,
+            descriptor_cache=runtime.descriptor_cache,
+        )
+    )
+
+
 def _run_prepared_batch(
     paths: Sequence[str],
     *,
@@ -105,12 +150,21 @@ def _run_prepared_batch(
     mode: int,
     batch_size: int,
     runtime: _BatchZMRuntime,
+    descriptor_runner=None,
 ) -> z.DescriptorVector:
     if not paths:
         width = _descriptor_width(mode, max_target_order, runtime.descriptor_cache)
         return z.DescriptorVector(
             values=jnp.empty((0, width), dtype=z.FLOAT_DTYPE),
             is_valid=jnp.empty((0, width), dtype=bool),
+        )
+
+    if descriptor_runner is None:
+        descriptor_runner = _prepare_descriptor_runner(
+            max_order=max_order,
+            max_target_order=max_target_order,
+            mode=mode,
+            runtime=runtime,
         )
 
     chunks: list[z.DescriptorVector] = []
@@ -129,16 +183,7 @@ def _run_prepared_batch(
 
         voxel_batch = jnp.asarray(pad_voxel_batch(host_voxels), dtype=z.FLOAT_DTYPE)
         chunks.append(
-            calculate_descriptor_batch_from_voxels(
-                voxel_batch,
-                max_order=max_order,
-                max_target_order=max_target_order,
-                mode=mode,
-                default_radius_multiplier=runtime.param["default_radius_multiplier"],
-                bbox_to_zm_cache=runtime.bbox_to_zm_cache,
-                rotation_cache=runtime.rotation_cache,
-                descriptor_cache=runtime.descriptor_cache,
-            )
+            descriptor_runner(voxel_batch)
         )
 
     return z.DescriptorVector(

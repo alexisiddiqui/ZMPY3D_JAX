@@ -211,8 +211,29 @@ repeatability regressions on CPU. Run both order 6 and order 20 on CUDA with:
 env -u LD_LIBRARY_PATH ZMPY3D_FLOAT32_REGRESSION_BACKEND=gpu \
   pytest -m "not benchmark" \
   ZMPY3D_JAX/tests/integration/test_float32_normalization_regression.py \
-  ZMPY3D_JAX/tests/integration/test_float32_stage_determinism.py
+  ZMPY3D_JAX/tests/integration/test_float32_stage_determinism.py \
+  ZMPY3D_JAX/tests/integration/test_float32_structure_accuracy.py
 ```
+
+The structure-accuracy regression compares float32 against an isolated x64 CPU reference and
+reports both per-structure error and preservation of the `6NT5`–`6NT6` descriptor difference.
+Set `ZMPY3D_FLOAT32_ACCURACY_OUTPUT` to a directory to write schema-v2 JSON reports for orders 6
+and 20.
+
+Run the internal order-20 mixed-precision timing prototype separately on CPU and GPU:
+
+```bash
+ZMPY3D_BENCHMARK_BACKEND=cpu pytest -q -m benchmark \
+  ZMPY3D_JAX/tests/benchmark/test_benchmark_mixed_precision.py
+
+env -u LD_LIBRARY_PATH ZMPY3D_BENCHMARK_BACKEND=gpu pytest -q -m benchmark \
+  ZMPY3D_JAX/tests/benchmark/test_benchmark_mixed_precision.py
+```
+
+Float32 batched descriptors now select the winning mixed-moment frontier automatically at order 20
+and above: Cartesian moments and bbox-to-ZM conversion use x64, then 3DZD and normalization return
+to float32. Order 6 and fully x64 execution are unchanged. Internal benchmarks retain a
+`moment_precision="configured"` override for baseline comparison.
 
 Run the informational CPU performance comparison with independent JAX and upstream pipelines:
 
@@ -262,22 +283,32 @@ env -u LD_LIBRARY_PATH ZMPY3D_BENCHMARK_BACKEND=gpu \
   ZMPY3D_JAX/tests/benchmark/test_benchmark_batched_pipeline.py
 ```
 
-By default it alternates the committed 6NT5/6NT6 fixtures at batch sizes 1, 4, and 16. Override
-these with `ZMPY3D_BATCH_SIZES`, and control sampling with `ZMPY3D_BATCH_REPEATS` and
-`ZMPY3D_BATCH_SAMPLES`. The schema-v5 JSON separates host preparation, transfer, first compilation,
-warmed device-core throughput, prepared end-to-end throughput, and production Mode 0/1/2 timings.
-It also records a synchronized stage profile for moments, 3DZD, each normalization order's AB
-candidates, rotation and invariant reduction, and final assembly. Separate profiles compare the
-scatter and segmented implementations for bbox-to-ZM conversion and normalization rotation. These
-stage timings are diagnostic and should not be summed to reconstruct fused device-core latency.
+By default it profiles the production float32/mixed-precision order-20 path with alternating
+6NT5/6NT6 fixtures at batch sizes 2 and 16. Override these with `ZMPY3D_BATCH_SIZES` and
+`ZMPY3D_BATCH_MAX_ORDER`, and control sampling with `ZMPY3D_BATCH_REPEATS` and
+`ZMPY3D_BATCH_SAMPLES`. The schema-v6 JSON separates host preparation, transfer, first compilation,
+warmed device-core throughput, whole-pipeline JIT throughput, prepared end-to-end throughput, and
+production Mode 0/1/2 timings. It records both fused normalization methods and a diagnostic split
+of compact AB candidates, rotation, invariant reduction, moments, 3DZD, and assembly. Candidate
+solver probes retain the companion eigensolver as an oracle and compare the analytic odd-order
+solver and grouped even-order solve. Stage timings are synchronized diagnostics and should not be
+summed to reconstruct fused device-core latency.
+
+Set `ZMPY3D_BATCH_TRACE_DIR` to capture one warmed separate-pipeline and whole-JIT execution for
+the largest configured batch using JAX profiler annotations. The same benchmark command can be
+launched under Nsight Systems when a CUDA kernel timeline is required.
 Results are saved as:
 
 ```text
-ZMPY3D_JAX/tests/benchmark/_simple_time_benchmark/batched_pipeline_benchmark_*_*.json
+ZMPY3D_JAX/tests/benchmark/_simple_time_benchmark/batched_pipeline_profile_{cpu,gpu}.json
 ```
 
 Use `ZMPY3D_BATCH_BENCHMARK_OUTPUT` to select another output directory. As with the single-protein
 harness, results are informational and numerical parity is checked before timing.
+
+Production compact normalization uses a stable analytic quadratic for the initial odd-order roots;
+even orders retain the companion-matrix eigensolver. The prepared batch CLI compiles the complete
+device descriptor path once and reuses it across chunks and compatible input shapes.
 
 Run a focused module test:
 

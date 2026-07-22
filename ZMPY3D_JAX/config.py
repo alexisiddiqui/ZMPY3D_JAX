@@ -17,15 +17,16 @@ def configure_for_scientific_computing(
     Parameters
     ----------
     enable_x64 : bool, default=True
-        Enable float64 precision. Critical for accurate Zernike moment calculations.
+        Select float64 library defaults. When false, explicit x64 operations remain enabled
+        for the automatic high-order mixed-precision moment frontier.
     platform : str, optional
         Force specific platform ('cpu', 'gpu', 'tpu'). None uses JAX default.
 
     Notes
     -----
     This function should be called ONCE at program startup, before any JAX operations.
-    Float64 precision is strongly recommended for ZMPY3D_JAX to avoid numerical errors
-    in iterative algorithms and accumulations.
+    Float64 remains the recommended general-purpose scientific configuration. Float32
+    order-20 batched descriptors automatically retain x64 only for sensitive moment stages.
 
     Examples
     --------
@@ -43,9 +44,11 @@ def configure_for_scientific_computing(
         FLOAT_DTYPE = jnp.float64
         COMPLEX_DTYPE = jnp.complex128
     else:
-        jax.config.update("jax_enable_x64", False)
+        # Keep float32 as the library default while permitting the order-20 mixed
+        # moment frontier to issue explicit float64/complex128 operations.
+        jax.config.update("jax_enable_x64", True)
         print(
-            "Warning: JAX float64 precision is disabled. This may lead to numerical inaccuracies."
+            "JAX configured for float32 defaults with mixed-precision moments enabled"
         )
         FLOAT_DTYPE = jnp.float32
         COMPLEX_DTYPE = jnp.complex64

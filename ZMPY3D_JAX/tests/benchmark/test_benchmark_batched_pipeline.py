@@ -7,6 +7,7 @@ import os
 import platform
 import subprocess
 import time
+from functools import partial
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
@@ -21,14 +22,18 @@ import ZMPY3D_JAX as z
 BENCHMARK_BACKEND = os.getenv("ZMPY3D_BENCHMARK_BACKEND", "cpu").lower()
 if BENCHMARK_BACKEND not in {"cpu", "gpu"}:
     raise ValueError("ZMPY3D_BENCHMARK_BACKEND must be 'cpu' or 'gpu'")
-z.configure_for_scientific_computing(enable_x64=True, platform=BENCHMARK_BACKEND)
+z.configure_for_scientific_computing(enable_x64=False, platform=BENCHMARK_BACKEND)
 
 from ZMPY3D_JAX.ZMPY3D_CLI_BatchZM import (  # noqa: E402
     _BatchZMRuntime,
     _prepare_batch_runtime,
+    _prepare_descriptor_runner,
     _run_prepared_batch,
 )
 from ZMPY3D_JAX.lib.batched_descriptor import (  # noqa: E402
+    _calculate_ab_compact_candidate_group_batch,
+    _calculate_ab_compact_candidates_batch,
+    _calculate_normalized_mean_compact_batch,
     calculate_descriptor_batch_from_voxels,
     calculate_descriptor_batch_staged,
     pad_voxel_batch,
@@ -39,6 +44,11 @@ from ZMPY3D_JAX.lib.fill_voxel_by_weight_density04 import (  # noqa: E402
 from ZMPY3D_JAX.tests.utils.upstream_regression import REPO_ROOT, block_tree  # noqa: E402
 
 
+MAX_ORDER = int(os.getenv("ZMPY3D_BATCH_MAX_ORDER", "20"))
+if MAX_ORDER not in (6, 20, 40):
+    raise ValueError("ZMPY3D_BATCH_MAX_ORDER must be 6, 20, or 40")
+MAX_TARGET_ORDER = min(5, MAX_ORDER)
+
 BASE_STAGE_NAMES = (
     "bbox_order1",
     "radius_and_samples",
@@ -46,7 +56,7 @@ BASE_STAGE_NAMES = (
     "bbox_to_zm",
     "descriptor_3dzd",
 )
-NORMALIZATION_ORDERS = tuple(range(2, 6))
+NORMALIZATION_ORDERS = tuple(range(2, MAX_TARGET_ORDER + 1))
 NORMALIZATION_STAGE_PREFIXES = (
     "ab_candidates",
     "zm_rotation",
@@ -58,7 +68,7 @@ NORMALIZATION_REPRESENTATIONS = (
     "analytic_compact_parity",
 )
 ROTATION_REDUCTIONS = ("scatter", "segmented_scan")
-MOMENT_REDUCTIONS = ("scatter", "segmented_scan")
+MOMENT_REDUCTIONS = ("production_auto",)
 
 
 def _stage_names() -> tuple[str, ...]:
@@ -82,7 +92,7 @@ def _positive_env_int(name: str, default: int) -> int:
 
 
 def _batch_sizes() -> tuple[int, ...]:
-    configured = os.getenv("ZMPY3D_BATCH_SIZES", "1,4,16")
+    configured = os.getenv("ZMPY3D_BATCH_SIZES", "2,16")
     try:
         values = tuple(
             dict.fromkeys(int(item.strip()) for item in configured.split(","))
@@ -249,11 +259,12 @@ def _run_core(
 ) -> z.DescriptorVector:
     return calculate_descriptor_batch_from_voxels(
         voxels,
-        max_order=6,
-        max_target_order=5,
+        max_order=MAX_ORDER,
+        max_target_order=MAX_TARGET_ORDER,
         mode=mode,
         default_radius_multiplier=runtime.param["default_radius_multiplier"],
         bbox_to_zm_cache=runtime.bbox_to_zm_cache,
+        x64_bbox_to_zm_cache=runtime.x64_bbox_to_zm_cache,
         rotation_cache=runtime.rotation_cache,
         descriptor_cache=runtime.descriptor_cache,
         normalization_representation=normalization_representation,
@@ -279,14 +290,16 @@ def _run_staged_core(
 ):
     return calculate_descriptor_batch_staged(
         voxels,
-        max_order=6,
-        max_target_order=5,
+        max_order=MAX_ORDER,
+        max_target_order=MAX_TARGET_ORDER,
         mode=2,
         default_radius_multiplier=runtime.param["default_radius_multiplier"],
         bbox_to_zm_cache=runtime.bbox_to_zm_cache,
+        x64_bbox_to_zm_cache=runtime.x64_bbox_to_zm_cache,
         rotation_cache=runtime.rotation_cache,
         descriptor_cache=runtime.descriptor_cache,
         stage_executor=stage_executor,
+        normalization_representation="analytic_compact",
     )
 
 
@@ -294,8 +307,10 @@ def _profile_staged_batch(voxels: jax.Array, runtime: _BatchZMRuntime, repeats: 
     totals_ns = {name: 0 for name in _stage_names()}
     last_result = None
     last_candidates = None
+    last_outputs = None
     for _ in range(repeats):
         observed: set[str] = set()
+        outputs: dict[str, Any] = {}
 
         def execute(name: str, function: Callable[[], Any]) -> Any:
             assert name in totals_ns
@@ -305,14 +320,17 @@ def _profile_staged_batch(voxels: jax.Array, runtime: _BatchZMRuntime, repeats: 
             result = function()
             block_tree(result)
             totals_ns[name] += time.perf_counter_ns() - start
+            outputs[name] = result
             return result
 
         last_result, last_candidates = _run_staged_core(voxels, runtime, execute)
+        last_outputs = outputs
         assert observed == set(totals_ns)
 
     return (
         last_result,
         last_candidates,
+        last_outputs,
         {name: totals_ns[name] / repeats / 1e9 for name in totals_ns},
     )
 
@@ -338,10 +356,7 @@ def _output_path() -> Path:
         else Path(__file__).resolve().parent / "_simple_time_benchmark"
     )
     output_dir.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S_%fZ")
-    return (
-        output_dir / f"batched_pipeline_benchmark_{BENCHMARK_BACKEND}_{timestamp}.json"
-    )
+    return output_dir / f"batched_pipeline_profile_{BENCHMARK_BACKEND}.json"
 
 
 def _summarize_stage_profile(
@@ -385,11 +400,16 @@ def _summarize_stage_profile(
 
 
 def _validate_payload(payload: dict[str, Any]) -> None:
-    assert payload["schema_version"] == 5
+    assert payload["schema_version"] == 6
     assert payload["configuration"]["batch_sizes"]
     for workload in payload["results"]["workloads"].values():
         assert 0 < workload["padding_utilization"] <= 1
-        for section in ("transfer", "device_core", "prepared_end_to_end"):
+        for section in (
+            "transfer",
+            "device_core",
+            "compiled_device_core",
+            "prepared_end_to_end",
+        ):
             comparison = workload[section]
             assert comparison["sequential_over_batched_time_ratio"] > 0
             np.testing.assert_allclose(
@@ -422,8 +442,8 @@ def _validate_payload(payload: dict[str, Any]) -> None:
         )
         for order in NORMALIZATION_ORDERS:
             metadata = stage_profile["normalization_by_order"][str(order)]
-            expected_fixed = 16 if order % 2 == 0 else 8
-            expected_valid = 8 if order % 2 == 0 else 4
+            expected_fixed = 8 if order % 2 == 0 else 4
+            expected_valid = expected_fixed
             assert metadata["fixed_slots_per_protein"] == expected_fixed
             assert len(metadata["valid_slots_per_protein"]) == int(
                 workload["padded_voxel_shape"][0]
@@ -469,7 +489,9 @@ def test_batched_pipeline_throughput_snapshot() -> None:
     batch_sizes = _batch_sizes()
     fixture_paths = [str(REPO_ROOT / "6NT5.pdb"), str(REPO_ROOT / "6NT6.pdb")]
 
-    runtime, setup_seconds = _time_call(lambda: _prepare_batch_runtime(1.0, 6))
+    runtime, setup_seconds = _time_call(
+        lambda: _prepare_batch_runtime(1.0, MAX_ORDER)
+    )
     workloads = {}
     for batch_size in batch_sizes:
         paths = [fixture_paths[index % 2] for index in range(batch_size)]
@@ -497,14 +519,16 @@ def test_batched_pipeline_throughput_snapshot() -> None:
         def batched_core():
             return _run_core(batched_device, runtime)
 
+        compiled_core = jax.jit(partial(_run_core, runtime=runtime))
+
         sequential_result = sequential_core()
         batched_result = batched_core()
         block_tree((sequential_result, batched_result))
         np.testing.assert_allclose(
             np.asarray(batched_result.values),
             np.asarray(sequential_result.values),
-            rtol=1e-10,
-            atol=1e-10,
+            rtol=2e-3,
+            atol=2e-3,
             equal_nan=True,
         )
         np.testing.assert_array_equal(
@@ -515,8 +539,21 @@ def test_batched_pipeline_throughput_snapshot() -> None:
         _, sequential_first = _time_call(sequential_core)
         jax.clear_caches()
         _, batched_first = _time_call(batched_core)
+        _, compiled_first = _time_call(lambda: compiled_core(batched_device))
         sequential_core()
         batched_core()
+        compiled_result = compiled_core(batched_device)
+        block_tree(compiled_result)
+        np.testing.assert_allclose(
+            np.asarray(compiled_result.values),
+            np.asarray(batched_result.values),
+            rtol=2e-5,
+            atol=5e-6,
+            equal_nan=True,
+        )
+        np.testing.assert_array_equal(
+            np.asarray(compiled_result.is_valid), np.asarray(batched_result.is_valid)
+        )
 
         transfer_samples = _sample_pair(
             transfer_sequential,
@@ -530,6 +567,23 @@ def test_batched_pipeline_throughput_snapshot() -> None:
             repeats=repeats,
             sample_count=sample_count,
         )
+        compiled_core_samples = _sample_pair(
+            batched_core,
+            lambda: compiled_core(batched_device),
+            repeats=repeats,
+            sample_count=sample_count,
+        )
+        trace_root = os.getenv("ZMPY3D_BATCH_TRACE_DIR")
+        if trace_root and batch_size == max(batch_sizes):
+            trace_dir = Path(trace_root).expanduser() / (
+                f"{BENCHMARK_BACKEND}_order{MAX_ORDER}_batch{batch_size}"
+            )
+            trace_dir.mkdir(parents=True, exist_ok=True)
+            with jax.profiler.trace(str(trace_dir), create_perfetto_link=False):
+                with jax.profiler.TraceAnnotation("separate_device_pipeline"):
+                    block_tree(batched_core())
+                with jax.profiler.TraceAnnotation("whole_pipeline_jit"):
+                    block_tree(compiled_core(batched_device))
 
         mode_functions = {
             "mode_0_normalization": lambda: _run_core(batched_device, runtime, mode=0),
@@ -584,8 +638,8 @@ def test_batched_pipeline_throughput_snapshot() -> None:
             np.testing.assert_allclose(
                 np.asarray(representation_results[representation].values),
                 np.asarray(representation_results["full_fixed"].values),
-                rtol=1e-9,
-                atol=1e-9,
+                rtol=2e-3,
+                atol=2e-3,
                 equal_nan=True,
             )
             np.testing.assert_array_equal(
@@ -613,8 +667,8 @@ def test_batched_pipeline_throughput_snapshot() -> None:
         np.testing.assert_allclose(
             np.asarray(reduction_results["segmented_scan"].values),
             np.asarray(reduction_results["scatter"].values),
-            rtol=1e-9,
-            atol=1e-9,
+            rtol=2e-3,
+            atol=2e-3,
             equal_nan=True,
         )
         np.testing.assert_array_equal(
@@ -625,32 +679,15 @@ def test_batched_pipeline_throughput_snapshot() -> None:
             reduction_functions, repeats=repeats, sample_count=sample_count
         )
         moment_reduction_functions = {
-            reduction: (
-                lambda reduction=reduction: _run_core(
-                    batched_device,
-                    runtime,
-                    mode=1,
-                    moment_reduction=reduction,
-                )
+            "production_auto": lambda: _run_core(
+                batched_device, runtime, mode=1
             )
-            for reduction in MOMENT_REDUCTIONS
         }
         moment_reduction_results = {
             name: function()
             for name, function in moment_reduction_functions.items()
         }
         block_tree(moment_reduction_results)
-        np.testing.assert_allclose(
-            np.asarray(moment_reduction_results["segmented_scan"].values),
-            np.asarray(moment_reduction_results["scatter"].values),
-            rtol=1e-9,
-            atol=1e-9,
-            equal_nan=True,
-        )
-        np.testing.assert_array_equal(
-            np.asarray(moment_reduction_results["segmented_scan"].is_valid),
-            np.asarray(moment_reduction_results["scatter"].is_valid),
-        )
         moment_reduction_samples = _sample_functions(
             moment_reduction_functions,
             repeats=repeats,
@@ -670,35 +707,140 @@ def test_batched_pipeline_throughput_snapshot() -> None:
             np.asarray(staged_result.is_valid), np.asarray(batched_result.is_valid)
         )
         stage_samples = {name: [] for name in _stage_names()}
+        stage_outputs = None
         for _ in range(sample_count):
-            _, candidates_by_order, profile = _profile_staged_batch(
+            _, candidates_by_order, stage_outputs, profile = _profile_staged_batch(
                 batched_device, runtime, repeats
             )
             for name in _stage_names():
                 stage_samples[name].append(profile[name])
 
+        assert stage_outputs is not None
+        raw = stage_outputs["bbox_to_zm"][1]
+        rotation = runtime.rotation_cache
+        normalization_functions = {
+            f"order_{order}": (
+                lambda order=order: _calculate_normalized_mean_compact_batch(
+                    raw,
+                    order,
+                    rotation.binomial,
+                    rotation.max_order,
+                    rotation.clm,
+                    rotation.s_id,
+                    rotation.n,
+                    rotation.l,
+                    rotation.m,
+                    rotation.mu,
+                    rotation.k,
+                    rotation.is_nlm_value,
+                    "auto",
+                )
+            )
+            for order in NORMALIZATION_ORDERS
+        }
+        normalization_method_samples = _sample_functions(
+            normalization_functions, repeats=repeats, sample_count=sample_count
+        )
+        candidate_solver_functions = {
+            "odd_companion_order_3": lambda: _calculate_ab_compact_candidates_batch(
+                raw, 3, "companion"
+            ),
+            "odd_analytic_order_3": lambda: _calculate_ab_compact_candidates_batch(
+                raw, 3, "analytic_odd"
+            ),
+            "odd_companion_order_5": lambda: _calculate_ab_compact_candidates_batch(
+                raw, 5, "companion"
+            ),
+            "odd_analytic_order_5": lambda: _calculate_ab_compact_candidates_batch(
+                raw, 5, "analytic_odd"
+            ),
+            "even_companion_separate": lambda: (
+                _calculate_ab_compact_candidates_batch(raw, 2, "companion"),
+                _calculate_ab_compact_candidates_batch(raw, 4, "companion"),
+            ),
+            "even_companion_grouped": lambda: (
+                _calculate_ab_compact_candidate_group_batch(
+                    raw, (2, 4), "companion"
+                )
+            ),
+        }
+        candidate_solver_samples = _sample_functions(
+            candidate_solver_functions, repeats=repeats, sample_count=sample_count
+        )
+        odd_normalization_functions = {}
+        for order in (3, 5):
+            for strategy in ("companion", "analytic_odd"):
+                odd_normalization_functions[f"order_{order}_{strategy}"] = (
+                    lambda order=order, strategy=strategy: (
+                        _calculate_normalized_mean_compact_batch(
+                            raw,
+                            order,
+                            rotation.binomial,
+                            rotation.max_order,
+                            rotation.clm,
+                            rotation.s_id,
+                            rotation.n,
+                            rotation.l,
+                            rotation.m,
+                            rotation.mu,
+                            rotation.k,
+                            rotation.is_nlm_value,
+                            "auto",
+                            strategy,
+                        )
+                    )
+                )
+        odd_normalization_results = {
+            name: function()
+            for name, function in odd_normalization_functions.items()
+        }
+        block_tree(odd_normalization_results)
+        for order in (3, 5):
+            np.testing.assert_allclose(
+                np.asarray(
+                    odd_normalization_results[f"order_{order}_analytic_odd"]
+                ),
+                np.asarray(odd_normalization_results[f"order_{order}_companion"]),
+                rtol=2e-3,
+                atol=2e-3,
+                equal_nan=True,
+            )
+        odd_normalization_samples = _sample_functions(
+            odd_normalization_functions,
+            repeats=repeats,
+            sample_count=sample_count,
+        )
+
         def sequential_end_to_end():
             return _run_prepared_batch(
                 paths,
                 grid_width=1.0,
-                max_order=6,
-                max_target_order=5,
+                max_order=MAX_ORDER,
+                max_target_order=MAX_TARGET_ORDER,
                 mode=2,
                 batch_size=1,
                 runtime=runtime,
+                descriptor_runner=prepared_runner,
             )
 
         def batched_end_to_end():
             return _run_prepared_batch(
                 paths,
                 grid_width=1.0,
-                max_order=6,
-                max_target_order=5,
+                max_order=MAX_ORDER,
+                max_target_order=MAX_TARGET_ORDER,
                 mode=2,
                 batch_size=batch_size,
                 runtime=runtime,
+                descriptor_runner=prepared_runner,
             )
 
+        prepared_runner = _prepare_descriptor_runner(
+            max_order=MAX_ORDER,
+            max_target_order=MAX_TARGET_ORDER,
+            mode=2,
+            runtime=runtime,
+        )
         sequential_end_to_end()
         batched_end_to_end()
         end_to_end_samples = _sample_pair(
@@ -719,9 +861,13 @@ def test_batched_pipeline_throughput_snapshot() -> None:
             "first_device_execution": {
                 "sequential_seconds": sequential_first,
                 "batched_seconds": batched_first,
+                "whole_pipeline_jit_seconds": compiled_first,
             },
             "transfer": _comparison(*transfer_samples, protein_count=batch_size),
             "device_core": _comparison(*core_samples, protein_count=batch_size),
+            "compiled_device_core": _comparison(
+                *compiled_core_samples, protein_count=batch_size
+            ),
             "mode_profile": {
                 name: _summary(samples, batch_size)
                 for name, samples in mode_samples.items()
@@ -741,29 +887,46 @@ def test_batched_pipeline_throughput_snapshot() -> None:
             "stage_profile": _summarize_stage_profile(
                 stage_samples, candidates_by_order, batch_size
             ),
+            "normalization_method_profile": {
+                name: _summary(samples, batch_size)
+                for name, samples in normalization_method_samples.items()
+            },
+            "candidate_solver_profile": {
+                "candidate_generation": {
+                    name: _summary(samples, batch_size)
+                    for name, samples in candidate_solver_samples.items()
+                },
+                "odd_fused_normalization": {
+                    name: _summary(samples, batch_size)
+                    for name, samples in odd_normalization_samples.items()
+                },
+            },
             "prepared_end_to_end": _comparison(
                 *end_to_end_samples, protein_count=batch_size
             ),
         }
 
     payload = {
-        "schema_version": 5,
+        "schema_version": 6,
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
         "comparison_mode": "informational",
         "configuration": {
             "batch_sizes": list(batch_sizes),
             "inputs": ["6NT5.pdb", "6NT6.pdb"],
             "grid_width": 1.0,
-            "max_order": 6,
-            "max_target_order": 5,
+            "max_order": MAX_ORDER,
+            "max_target_order": MAX_TARGET_ORDER,
             "mode": 2,
             "samples": sample_count,
             "repeats_per_sample": repeats,
             "jax_x64_enabled": bool(jax.config.x64_enabled),
+            "configured_float_dtype": str(z.FLOAT_DTYPE),
+            "moment_precision": "auto_mixed_for_float32_order20_plus",
             "jax_requested_backend": BENCHMARK_BACKEND,
             "voxelization": "sequential_numpy_host",
             "padding": "input_order_chunk_high_side_zero_padding",
             "stage_profile": "device_resident_block_after_each_stage",
+            "normalization_stage_representation": "analytic_compact",
             "profiled_modes": {
                 "0": "normalization_only",
                 "1": "3dzd_only",

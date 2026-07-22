@@ -37,9 +37,9 @@ hardware-dependent failure threshold.
 Latest verification:
 
 ```text
-Default suite:             178 passed, 74 deselected
-Order-20 regression tier:  5 passed
-CUDA float32 regression:   4 passed
+Default suite:             182 passed, 76 deselected
+Order-20 regression tier:  6 passed, 252 deselected
+CUDA float32 regression:   6 passed across the three focused files
 CPU timing benchmark:      3 passed
 ```
 
@@ -363,6 +363,100 @@ scatter at `1.878` and segmented at `1.865` ms/protein for the complete 3DZD-onl
 meaningful change). A smaller batch-2 GPU x64 diagnostic measured `0.316` versus `0.345`
 ms/protein; this short run is informational and production x64 continues to select scatter.
 
+### Float32 structure-discrimination characterization
+
+The schema-v2 cross-precision harness compares float32 CPU or GPU execution with an isolated x64
+CPU reference for both `6NT5` and `6NT6`. It records per-structure error, pairwise separation,
+difference-vector error and cosine, descriptor blocks, candidate counts, and the production
+weighted score at order 20. Frozen-boundary probes distinguish local kernel error from propagated
+error. Configured float32 remains characterization-only; the internal prototypes are gated against
+the measured CPU float32 baseline below.
+
+| Backend/order | Separation ratio | Difference-vector error | Cosine | Score error |
+| --- | ---: | ---: | ---: | ---: |
+| CPU / 6 | 0.9978 | 0.0153 | 0.9999 | n/a |
+| CPU / 20 | 0.9963 | 0.0693 | 0.9976 | 0.334 points |
+| GPU / 6 | 0.9938 | 0.0205 | 0.9998 | n/a |
+| GPU / 20 | 13.3923 | 13.4007 | 0.0289 | 102.215 points |
+
+Order-6 float32 preserves the structural difference well on both backends. CPU order 20 remains
+directionally faithful, but GPU order 20 is not scientifically usable: the x64 weighted similarity
+of `25.94` becomes `-76.28` in float32. The first GPU-specific loss is the high-order Cartesian
+moment contraction. With frozen x64 inputs, its difference-vector error is `0.72%` on GPU versus
+`0.00047%` on CPU; feeding those errors into the ill-conditioned bbox-to-ZM transform causes the
+end-to-end failure. Conversely, freezing raw Zernike moments makes the remaining GPU descriptor
+path agree within `0.022%`, confirming that candidate generation, rotation and assembly are not
+the source.
+
+The schema-v2 reports also compare two internal order-20 prototypes. Both pass the CPU-float32
+accuracy gate, which requires GPU results to be no worse than CPU float32 for score error,
+difference-vector error and cosine, and separation magnitude:
+
+| Prototype | Separation ratio | Difference error | Cosine | Score error |
+| --- | ---: | ---: | ---: | ---: |
+| Cartesian x64, bbox-to-ZM float32 | 1.00238 | 0.05490 | 0.99850 | 0.0824 points |
+| Cartesian x64 and bbox-to-ZM x64 | 0.99944 | 0.02188 | 0.99976 | 0.00295 points |
+
+Float64 accumulation with float32 powers and cell integrals was rejected during feasibility work;
+the complete Cartesian integral contraction must use float64. Both successful paths downcast before
+3DZD and normalization.
+
+A 7-sample, 3-repeat batch-2 benchmark measured the deterministic frontiers as follows:
+
+| Backend | Configured float32 | Cartesian x64 | Moments x64 |
+| --- | ---: | ---: | ---: |
+| CPU | 78.991 ms/protein | 81.427 ms/protein | 82.733 ms/protein |
+| RTX 3090 | 1.890 ms/protein | 2.050 ms/protein | 2.109 ms/protein |
+
+The full frontier costs approximately 11.6% end-to-end versus configured float32. It is intentionally
+selected over the 8.5%-overhead Cartesian-only frontier because its score error is `0.00295` rather
+than `0.0824` points. Its complex128 conversion uses deterministic segmented reduction; scatter was
+rejected after repeated CUDA runs exposed final variation up to `9.54e-7`. The `moments_x64`
+frontier is now the production batch default whenever the
+configured library dtype is float32 and `max_order >= 20`. Order 6 and configured x64 behavior are
+unchanged; the benchmark retains an internal configured-precision override for comparison.
+
+Structured reports:
+`float32_structure_accuracy_{cpu,gpu}_order{6,20}.json` and
+`mixed_precision_benchmark_{cpu,gpu}.json` in the benchmark results directory.
+
+## Production Order-20 Method Profile
+
+The schema-v6 harness now matches the production default: float32 descriptors, mixed x64 moments,
+order 20, compact normalization, deterministic reductions, and target orders 2 through 5. It
+records fused production methods alongside a synchronized diagnostic decomposition and compares
+separate device launches with a whole-pipeline compiled executable.
+
+The final clean profiles used alternating 6NT5/6NT6 structures at batch sizes 2 and 16. GPU runs
+used 9 samples with 3 repeats; CPU runs used 5 samples with 1 repeat. At batch size 16:
+
+| Measurement | CPU ms/protein | RTX 3090 ms/protein |
+| --- | ---: | ---: |
+| Separately launched production core | 73.543 | 1.086 |
+| Whole-pipeline JIT core | 64.892 | 1.010 |
+| Mixed moment stages, synchronized | 14.012 | 0.216 |
+| Compact AB candidates, synchronized | 0.034 | 0.489 |
+| ZM rotation, synchronized | 61.677 | 0.468 |
+| Prepared end-to-end | 68.735 | 6.997 |
+
+Whole-pipeline compilation improves batch-16 throughput by 15.0% on CPU and 8.3% on GPU. At GPU
+batch size 2 it improves 1.890 to 1.285 ms/protein, or 45.9%. The prepared batch CLI now builds one
+compiled descriptor runner per invocation and reuses it across chunks; direct descriptor calls
+retain their validation wrapper and existing behavior.
+
+The compact candidate profile identified the two odd-order companion eigensolves as avoidable GPU
+work. Replacing them with a stable analytic quadratic reduced batch-16 candidate generation from
+0.145 to 0.004 ms/protein for order 3 and from 0.140 to 0.003 ms/protein for order 5. Their fused
+normalization methods measure 0.087 and 0.089 ms/protein. Grouping the even order-2/order-4
+companion eigensolves measured 0.480 ms/protein versus 0.481 separately and was not promoted.
+
+The order-20 CUDA numerical suite remains bitwise repeatable and preserves the accepted 6NT5/6NT6
+metrics: similarity-score error `0.0029475`, pair-difference cosine `0.9997608`, and separation
+ratio `0.9994425`.
+
+Structured results overwrite:
+`batched_pipeline_profile_{cpu,gpu}.json` in the benchmark results directory.
+
 ## Previous Batched Stage Profile
 
 The clean, sequentially executed schema-v2 profile used 5 repeats, 9 samples, x64, mixed
@@ -398,11 +492,14 @@ valid pairs back into JAX rotation. Use the fixed grouped candidate API and comp
 explicit transformation-selection boundary. Treat this as boundary cleanup unless profiling shows
 a material end-to-end benefit.
 
-### 2. Profile the remaining compact normalization kernels
+### 2. Profile the remaining even candidate and rotation kernels
 
-The invalid-slot work has been removed. Re-profile compact candidate generation and compact
-rotation separately before changing voxelization. The next normalization optimization should be
-guided by the new compact-stage split rather than by the legacy full-fixed stage totals.
+The odd companion solves and invalid-slot work have been removed. On the RTX 3090 at batch 16,
+even-order companion candidate generation and deterministic rotation are now tied at approximately
+0.48 and 0.47 ms/protein. Use the saved JAX/Nsight trace to distinguish eigensolver and rotation
+kernel limits before attempting an analytic quartic or changing the rotation arithmetic. Host
+voxelization should be treated separately because it dominates prepared end-to-end latency but not
+device throughput.
 
 ### 3. Establish baselines only after optimization
 

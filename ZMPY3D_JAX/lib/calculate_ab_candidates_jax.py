@@ -206,6 +206,41 @@ def _abconj_coefficients(
     )
 
 
+def _stable_quadratic_roots(coefficients: chex.Array) -> chex.Array:
+    """Solve one complex quadratic while avoiding the cancelled numerator."""
+    coefficients = jnp.asarray(coefficients, dtype=_config.COMPLEX_DTYPE)
+    a, b, c = coefficients
+    nondegenerate = a != 0
+    safe_a = jnp.where(nondegenerate, a, jnp.ones_like(a))
+    discriminant = jnp.sqrt(b * b - 4 * a * c)
+    numerator_plus = -b + discriminant
+    numerator_minus = -b - discriminant
+    numerator = jnp.where(
+        jnp.abs(numerator_plus) >= jnp.abs(numerator_minus),
+        numerator_plus,
+        numerator_minus,
+    )
+    root1 = numerator / (2 * safe_a)
+    root1_nonzero = root1 != 0
+    safe_root1 = jnp.where(root1_nonzero, root1, jnp.ones_like(root1))
+    root2 = c / (safe_a * safe_root1)
+    valid = nondegenerate & root1_nonzero
+    invalid = jnp.asarray(jnp.nan + 0j, dtype=coefficients.dtype)
+    return jnp.where(valid, jnp.stack((root1, root2)), invalid)
+
+
+def _initial_abconj_roots(
+    coefficients: chex.Array,
+    target_order2_norm_rotate: int,
+    root_strategy: str,
+) -> chex.Array:
+    if root_strategy not in ("companion", "analytic_odd"):
+        raise ValueError("root_strategy must be 'companion' or 'analytic_odd'")
+    if root_strategy == "analytic_odd" and target_order2_norm_rotate % 2 == 1:
+        return _stable_quadratic_roots(coefficients)
+    return _eigen_root_jax(coefficients)
+
+
 @partial(jax.jit, static_argnums=(1,))
 def calculate_ab_rotation_candidates(
     z_moment_raw: chex.Array, target_order2_norm_rotate: int
@@ -219,19 +254,50 @@ def calculate_ab_rotation_candidates(
     return ABRotationCandidates(pairs, is_valid.reshape(-1))
 
 
-@partial(jax.jit, static_argnums=(1,))
+@partial(jax.jit, static_argnums=(1, 2))
 def calculate_ab_rotation_compact_candidates(
-    z_moment_raw: chex.Array, target_order2_norm_rotate: int
+    z_moment_raw: chex.Array,
+    target_order2_norm_rotate: int,
+    root_strategy: str = "analytic_odd",
 ) -> ABRotationCandidates:
     """Generate only the two useful secondary roots per initial root."""
     z_moment_raw = jnp.asarray(z_moment_raw, dtype=_config.COMPLEX_DTYPE)
     coefficients = _abconj_coefficients(z_moment_raw, target_order2_norm_rotate)
-    abconj_sol = _eigen_root_jax(coefficients)
+    abconj_sol = _initial_abconj_roots(
+        coefficients, target_order2_norm_rotate, root_strategy
+    )
     a, b, is_valid = _compute_compact_ab_candidates_impl(
         z_moment_raw, abconj_sol, 2
     )
     pairs = jnp.stack((a, b), axis=-1).reshape((-1, 2))
     return ABRotationCandidates(pairs, is_valid.reshape(-1))
+
+
+@partial(jax.jit, static_argnums=(1, 2))
+def calculate_ab_rotation_compact_candidate_group(
+    z_moment_raw: chex.Array,
+    target_orders: tuple[int, ...],
+    root_strategy: str = "companion",
+) -> ABRotationCandidates:
+    """Generate same-degree compact candidates in one batched eigensolve."""
+    if not target_orders or len({order % 2 for order in target_orders}) != 1:
+        raise ValueError("target_orders must be non-empty and share one parity")
+    if root_strategy not in ("companion", "analytic_odd"):
+        raise ValueError("root_strategy must be 'companion' or 'analytic_odd'")
+    coefficients = jnp.stack(
+        [_abconj_coefficients(z_moment_raw, order) for order in target_orders]
+    )
+    if root_strategy == "analytic_odd" and target_orders[0] % 2 == 1:
+        roots = jax.vmap(_stable_quadratic_roots)(coefficients)
+    else:
+        roots = jax.vmap(_eigen_root_jax)(coefficients)
+    a, b, is_valid = jax.vmap(
+        lambda item_roots: _compute_compact_ab_candidates_impl(
+            z_moment_raw, item_roots, 2
+        )
+    )(roots)
+    pairs = jnp.stack((a, b), axis=-1).reshape((len(target_orders), -1, 2))
+    return ABRotationCandidates(pairs, is_valid.reshape((len(target_orders), -1)))
 
 
 @partial(jax.jit, static_argnums=(1,))

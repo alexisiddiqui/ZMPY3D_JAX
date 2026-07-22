@@ -12,6 +12,7 @@ import ZMPY3D_JAX.config as _config
 
 from .calculate_ab_candidates_jax import (
     calculate_ab_rotation_candidates,
+    calculate_ab_rotation_compact_candidate_group,
     calculate_ab_rotation_compact_candidates,
 )
 from .calculate_bbox_moment06 import _calculate_bbox_moment_jax
@@ -195,12 +196,29 @@ def _calculate_ab_candidates_batch(raw_moments: chex.Array, target_order: int):
     )
 
 
-@partial(jax.jit, static_argnums=(1,))
+@partial(jax.jit, static_argnums=(1, 2))
 def _calculate_ab_compact_candidates_batch(
-    raw_moments: chex.Array, target_order: int
+    raw_moments: chex.Array,
+    target_order: int,
+    root_strategy: str = "analytic_odd",
 ):
     return jax.vmap(
-        lambda raw: calculate_ab_rotation_compact_candidates(raw, target_order)
+        lambda raw: calculate_ab_rotation_compact_candidates(
+            raw, target_order, root_strategy
+        )
+    )(raw_moments)
+
+
+@partial(jax.jit, static_argnums=(1, 2))
+def _calculate_ab_compact_candidate_group_batch(
+    raw_moments: chex.Array,
+    target_orders: tuple[int, ...],
+    root_strategy: str = "companion",
+):
+    return jax.vmap(
+        lambda raw: calculate_ab_rotation_compact_candidate_group(
+            raw, target_orders, root_strategy
+        )
     )(raw_moments)
 
 
@@ -285,7 +303,7 @@ def _calculate_normalized_mean_batch(
     return _calculate_masked_mean_batch(rotated, candidates.is_valid)
 
 
-@partial(jax.jit, static_argnums=(1, 3, 12))
+@partial(jax.jit, static_argnums=(1, 3, 12, 13))
 def _calculate_normalized_mean_compact_batch(
     raw_moments: chex.Array,
     target_order: int,
@@ -300,8 +318,11 @@ def _calculate_normalized_mean_compact_batch(
     k: chex.Array,
     is_nlm_value: chex.Array,
     reduction_strategy: str = "auto",
+    candidate_root_strategy: str = "analytic_odd",
 ) -> chex.Array:
-    candidates = _calculate_ab_compact_candidates_batch(raw_moments, target_order)
+    candidates = _calculate_ab_compact_candidates_batch(
+        raw_moments, target_order, candidate_root_strategy
+    )
     rotated = _calculate_rotation_batch(
         raw_moments,
         candidates.pairs,
@@ -451,6 +472,16 @@ def _assemble_descriptor_batch(
     return DescriptorVector(values=values, is_valid=~jnp.isnan(values))
 
 
+def _uses_mixed_moments(max_order: int, moment_precision: str) -> bool:
+    if moment_precision not in ("auto", "configured", "mixed"):
+        raise ValueError("moment_precision must be 'auto', 'configured', or 'mixed'")
+    if moment_precision == "configured":
+        return False
+    if moment_precision == "mixed":
+        return True
+    return _config.FLOAT_DTYPE == jnp.float32 and max_order >= 20
+
+
 def calculate_descriptor_batch_from_voxels(
     voxels: chex.Array,
     *,
@@ -459,11 +490,13 @@ def calculate_descriptor_batch_from_voxels(
     mode: int,
     default_radius_multiplier: float,
     bbox_to_zm_cache: BBoxToZMCache,
+    x64_bbox_to_zm_cache: BBoxToZMCache | None = None,
     rotation_cache: ZMRotationCache,
     descriptor_cache: DescriptorAssemblyCache,
     normalization_representation: str = "analytic_compact",
     rotation_reduction: str = "auto",
     moment_reduction: str = "auto",
+    moment_precision: str = "auto",
 ) -> DescriptorVector:
     """Calculate complete descriptors for one padded, device-resident voxel batch."""
     if mode not in (0, 1, 2):
@@ -484,6 +517,12 @@ def calculate_descriptor_batch_from_voxels(
         raise ValueError("unknown rotation reduction")
     if moment_reduction not in ("auto", "scatter", "segmented_scan"):
         raise ValueError("unknown moment reduction")
+    use_mixed_moments = _uses_mixed_moments(max_order, moment_precision)
+    if use_mixed_moments:
+        if x64_bbox_to_zm_cache is None:
+            raise ValueError("mixed moments require x64_bbox_to_zm_cache")
+        if x64_bbox_to_zm_cache.max_order != max_order:
+            raise ValueError("x64 bbox-to-ZM cache maximum order does not match max_order")
 
     voxel_batch = jnp.asarray(voxels, dtype=_config.FLOAT_DTYPE)
     if voxel_batch.ndim != 4 or voxel_batch.shape[0] == 0:
@@ -491,16 +530,46 @@ def calculate_descriptor_batch_from_voxels(
             "voxels must have shape (batch, x, y, z) with a non-empty batch"
         )
 
-    _, scaled, raw = _calculate_zm_batch(
-        voxel_batch,
-        max_order,
-        default_radius_multiplier,
-        bbox_to_zm_cache.g_coefficients,
-        bbox_to_zm_cache.pqr_indices,
-        bbox_to_zm_cache.output_indices,
-        bbox_to_zm_cache.clm,
-        moment_reduction,
-    )
+    if use_mixed_moments:
+        from .mixed_precision_prototype import (
+            calculate_bbox_moments_mixed_prototype,
+            calculate_zm_mixed_prototype,
+        )
+
+        masses, centers, _ = _calculate_bbox_order1_batch(voxel_batch)
+        radius = _calculate_radius_and_samples_batch(
+            voxel_batch, centers, masses, default_radius_multiplier
+        )
+        bbox_moments = calculate_bbox_moments_mixed_prototype(
+            voxel_batch,
+            max_order,
+            radius[3],
+            radius[4],
+            radius[5],
+            "moments_x64",
+        )
+        scaled, raw = calculate_zm_mixed_prototype(
+            bbox_moments,
+            max_order,
+            bbox_to_zm_cache.g_coefficients,
+            bbox_to_zm_cache.pqr_indices,
+            bbox_to_zm_cache.output_indices,
+            bbox_to_zm_cache.clm,
+            x64_bbox_to_zm_cache.g_coefficients,
+            x64_bbox_to_zm_cache.clm,
+            "moments_x64",
+        )
+    else:
+        _, scaled, raw = _calculate_zm_batch(
+            voxel_batch,
+            max_order,
+            default_radius_multiplier,
+            bbox_to_zm_cache.g_coefficients,
+            bbox_to_zm_cache.pqr_indices,
+            bbox_to_zm_cache.output_indices,
+            bbox_to_zm_cache.clm,
+            moment_reduction,
+        )
     descriptors = _calculate_3dzd_batch(scaled) if mode in (1, 2) else None
 
     if mode in (0, 2):
@@ -536,11 +605,14 @@ def calculate_descriptor_batch_staged(
     mode: int,
     default_radius_multiplier: float,
     bbox_to_zm_cache: BBoxToZMCache,
+    x64_bbox_to_zm_cache: BBoxToZMCache | None = None,
     rotation_cache: ZMRotationCache,
     descriptor_cache: DescriptorAssemblyCache,
     stage_executor: StageExecutor | None = None,
+    normalization_representation: str = "analytic_compact",
     rotation_reduction: str = "auto",
     moment_reduction: str = "auto",
+    moment_precision: str = "auto",
 ) -> tuple[DescriptorVector, dict[int, Any]]:
     """Run the batch pipeline through independently synchronizable device stages."""
     if mode not in (0, 1, 2):
@@ -555,6 +627,17 @@ def calculate_descriptor_batch_staged(
         raise ValueError("unknown rotation reduction")
     if moment_reduction not in ("auto", "scatter", "segmented_scan"):
         raise ValueError("unknown moment reduction")
+    if normalization_representation not in ("full_fixed", "analytic_compact"):
+        raise ValueError(
+            "staged normalization representation must be 'full_fixed' or "
+            "'analytic_compact'"
+        )
+    use_mixed_moments = _uses_mixed_moments(max_order, moment_precision)
+    if use_mixed_moments:
+        if x64_bbox_to_zm_cache is None:
+            raise ValueError("mixed moments require x64_bbox_to_zm_cache")
+        if x64_bbox_to_zm_cache.max_order != max_order:
+            raise ValueError("x64 bbox-to-ZM cache maximum order does not match max_order")
 
     voxel_batch = jnp.asarray(voxels, dtype=_config.FLOAT_DTYPE)
     if voxel_batch.ndim != 4 or voxel_batch.shape[0] == 0:
@@ -579,24 +662,56 @@ def calculate_descriptor_batch_staged(
             voxel_batch, centers, masses, default_radius_multiplier
         ),
     )
-    _, _, bbox_moments = execute(
-        "bbox_max_order",
-        lambda: _calculate_bbox_max_order_batch(
-            voxel_batch, max_order, x_samples, y_samples, z_samples
-        ),
-    )
-    scaled, raw = execute(
-        "bbox_to_zm",
-        lambda: _calculate_bbox_to_zm_batch(
-            bbox_moments,
-            max_order,
-            bbox_to_zm_cache.g_coefficients,
-            bbox_to_zm_cache.pqr_indices,
-            bbox_to_zm_cache.output_indices,
-            bbox_to_zm_cache.clm,
-            moment_reduction,
-        ),
-    )
+    if use_mixed_moments:
+        from .mixed_precision_prototype import (
+            calculate_bbox_moments_mixed_prototype,
+            calculate_zm_mixed_prototype,
+        )
+
+        bbox_moments = execute(
+            "bbox_max_order",
+            lambda: calculate_bbox_moments_mixed_prototype(
+                voxel_batch,
+                max_order,
+                x_samples,
+                y_samples,
+                z_samples,
+                "moments_x64",
+            ),
+        )
+        scaled, raw = execute(
+            "bbox_to_zm",
+            lambda: calculate_zm_mixed_prototype(
+                bbox_moments,
+                max_order,
+                bbox_to_zm_cache.g_coefficients,
+                bbox_to_zm_cache.pqr_indices,
+                bbox_to_zm_cache.output_indices,
+                bbox_to_zm_cache.clm,
+                x64_bbox_to_zm_cache.g_coefficients,
+                x64_bbox_to_zm_cache.clm,
+                "moments_x64",
+            ),
+        )
+    else:
+        _, _, bbox_moments = execute(
+            "bbox_max_order",
+            lambda: _calculate_bbox_max_order_batch(
+                voxel_batch, max_order, x_samples, y_samples, z_samples
+            ),
+        )
+        scaled, raw = execute(
+            "bbox_to_zm",
+            lambda: _calculate_bbox_to_zm_batch(
+                bbox_moments,
+                max_order,
+                bbox_to_zm_cache.g_coefficients,
+                bbox_to_zm_cache.pqr_indices,
+                bbox_to_zm_cache.output_indices,
+                bbox_to_zm_cache.clm,
+                moment_reduction,
+            ),
+        )
 
     descriptors = (
         execute("descriptor_3dzd", lambda: _calculate_3dzd_batch(scaled))
@@ -609,8 +724,10 @@ def calculate_descriptor_batch_staged(
         for target_order in range(2, max_target_order + 1):
             candidates = execute(
                 f"ab_candidates_order_{target_order}",
-                lambda target_order=target_order: _calculate_ab_candidates_batch(
-                    raw, target_order
+                lambda target_order=target_order: (
+                    _calculate_ab_candidates_batch(raw, target_order)
+                    if normalization_representation == "full_fixed"
+                    else _calculate_ab_compact_candidates_batch(raw, target_order)
                 ),
             )
             candidates_by_order[target_order] = candidates

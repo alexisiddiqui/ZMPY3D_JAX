@@ -40,7 +40,10 @@ def _run_worker(max_order: int, backend: str) -> None:
 
     z.configure_for_scientific_computing(enable_x64=False, platform=backend)
 
-    from ZMPY3D_JAX.ZMPY3D_CLI_BatchZM import _prepare_batch_runtime
+    from ZMPY3D_JAX.ZMPY3D_CLI_BatchZM import (
+        _prepare_batch_runtime,
+        _prepare_descriptor_runner,
+    )
     from ZMPY3D_JAX.lib.batched_descriptor import (
         _calculate_bbox_max_order_batch,
         _calculate_bbox_order1_batch,
@@ -88,6 +91,12 @@ def _run_worker(max_order: int, backend: str) -> None:
         "auto",
     )
     jax.block_until_ready((order1, radius, bbox, zm))
+    compiled_descriptor = _prepare_descriptor_runner(
+        max_order=max_order,
+        max_target_order=5,
+        mode=2,
+        runtime=runtime,
+    )
 
     stages = {
         "bbox_order1": lambda: _calculate_bbox_order1_batch(voxels),
@@ -118,9 +127,11 @@ def _run_worker(max_order: int, backend: str) -> None:
                 "default_radius_multiplier"
             ],
             bbox_to_zm_cache=runtime.bbox_to_zm_cache,
+            x64_bbox_to_zm_cache=runtime.x64_bbox_to_zm_cache,
             rotation_cache=runtime.rotation_cache,
             descriptor_cache=runtime.descriptor_cache,
         ),
+        "compiled_descriptor_pipeline": lambda: compiled_descriptor(voxels),
     }
     for stage, calculate in stages.items():
         baseline = calculate()

@@ -107,7 +107,7 @@ def test_staged_batch_matches_fused_and_reports_candidate_slots(pdb_files):
     staged, candidates = calculate_descriptor_batch_staged(voxels, **arguments)
 
     np.testing.assert_allclose(
-        staged.values, fused.values, rtol=1e-6, atol=1e-6, equal_nan=True
+        staged.values, fused.values, rtol=2e-6, atol=5e-6, equal_nan=True
     )
     np.testing.assert_array_equal(staged.is_valid, fused.is_valid)
     for alternative in (compact, parity_fused):
@@ -115,7 +115,7 @@ def test_staged_batch_matches_fused_and_reports_candidate_slots(pdb_files):
             alternative.values, fused.values, rtol=1e-5, atol=1e-5, equal_nan=True
         )
         np.testing.assert_array_equal(alternative.is_valid, fused.is_valid)
-    for order, fixed, valid in ((2, 16, 8), (3, 8, 4), (4, 16, 8), (5, 8, 4)):
+    for order, fixed, valid in ((2, 8, 8), (3, 4, 4), (4, 8, 8), (5, 4, 4)):
         assert candidates[order].pairs.shape == (2, fixed, 2)
         np.testing.assert_array_equal(
             jnp.sum(candidates[order].is_valid, axis=1), [valid, valid]
