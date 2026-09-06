@@ -30,6 +30,7 @@ import numpy as np
 
 import ZMPY3D_JAX as z
 from ZMPY3D_JAX.lib.descriptor_assembly import compact_descriptor_for_host
+from ZMPY3D_JAX.lib.structure_voxel import voxelize_structure
 
 
 def ZMPY3D_CLI_ZM(
@@ -38,6 +39,14 @@ def ZMPY3D_CLI_ZM(
     MaxOrder: int = 6,
     MaxTargetOrder2NormRotate: int = 5,
     Mode: int = 0,
+    *,
+    Representation: str = "ca_residue",
+    IncludeHetero: bool = False,
+    IncludeWater: bool = False,
+    IncludeHydrogens: bool = False,
+    ChainID: str | None = None,
+    Model: int = 1,
+    AssemblyID: str | None = None,
 ) -> z.DescriptorVector:
     """
     Calculate 3D Zernike moments for a single PDB structure.
@@ -62,6 +71,20 @@ def ZMPY3D_CLI_ZM(
         - 1: 3DZD 121 invariant descriptor only
         - 2: Both Canterakis normalization and 3DZD 121 invariant
         Default is 0.
+    Representation : {"ca_residue", "all_atom_gaussian"}, optional
+        Input density model. The default preserves the original residue-level
+        C-alpha representation. The all-atom representation uses atomic mass,
+        Bondi-style van der Waals radii, and PDB occupancy.
+    IncludeHetero, IncludeWater, IncludeHydrogens : bool, optional
+        Selection controls for the all-atom representation. Heavy ``ATOM``
+        records are the default; hetero atoms and hydrogens are opt-in, while
+        water additionally requires both IncludeHetero and IncludeWater.
+    ChainID : str, optional
+        Select one PDB chain in all-atom mode. The default combines chains.
+    Model : int, optional
+        One-based PDB model ordinal selected in all-atom mode. Default is 1.
+    AssemblyID : str, optional
+        Biological assembly identifier for mmCIF all-atom input.
 
     Returns
     -------
@@ -123,13 +146,29 @@ def ZMPY3D_CLI_ZM(
     )
     DescriptorCache = z.prepare_descriptor_assembly_cache(MaxOrder)
 
-    ResidueBox = z.get_residue_gaussian_density_cache(Param)
-
-    [XYZ, AA_NameList] = z.get_pdb_xyz_ca(PDBFileName)
-
-    [Voxel3D, Corner] = z.fill_voxel_by_weight_density(
-        XYZ, AA_NameList, Param["residue_weight_map"], GridWidth, ResidueBox[GridWidth]
+    if Representation == "ca_residue":
+        residue_box = z.get_residue_gaussian_density_cache(Param)
+        weight_map = Param["residue_weight_map"]
+        density_boxes = residue_box[GridWidth]
+    elif Representation == "all_atom_gaussian":
+        weight_map = z.get_atomic_mass_map()
+        density_boxes = z.get_atomic_gaussian_density_cache(GridWidth)
+    else:
+        raise ValueError("Representation must be 'ca_residue' or 'all_atom_gaussian'")
+    prepared = voxelize_structure(
+        PDBFileName,
+        representation=Representation,
+        grid_width=GridWidth,
+        weight_map=weight_map,
+        density_boxes=density_boxes,
+        model=Model,
+        chain_ids=ChainID,
+        assembly_id=AssemblyID,
+        include_hetero=IncludeHetero,
+        include_water=IncludeWater,
+        include_hydrogens=IncludeHydrogens,
     )
+    Voxel3D = jnp.asarray(prepared[0][1], dtype=z.FLOAT_DTYPE)
     Dimension_BBox_scaled = Voxel3D.shape
 
     XYZ_SampleStruct = {

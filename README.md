@@ -160,6 +160,72 @@ orders. The console command accepts the equivalent optional flag:
 ZMPY3D_CLI_BatchZM pdb_files.txt 1.0 6 5 2 --batch-size 16
 ```
 
+### Experimental all-atom density
+
+The Python API also provides an explicit heavy-atom representation. It places a
+mass-normalized Gaussian at every selected atom, derives Gaussian width from a
+Bondi-style elemental van der Waals radius, and scales density by the PDB occupancy:
+
+```python
+import ZMPY3D_JAX as z
+
+descriptor = z.ZMPY3D_CLI_ZM(
+    "6NT5.pdb",
+    GridWidth=1.0,
+    MaxOrder=6,
+    MaxTargetOrder2NormRotate=5,
+    Mode=2,
+    Representation="all_atom_gaussian",
+)
+```
+
+The default selection includes heavy `ATOM` records from model 1 across all chains.
+Hydrogens, `HETATM` records, and waters are excluded. Selection can be made explicit:
+
+```python
+descriptor = z.ZMPY3D_CLI_ZM(
+    "complex.cif",
+    Representation="all_atom_gaussian",
+    ChainID="A",
+    Model=1,
+    AssemblyID="1",
+    IncludeHetero=True,
+    IncludeWater=False,
+    IncludeHydrogens=False,
+)
+```
+
+The new all-atom path uses Biotite for legacy PDB and mmCIF input, including
+occupancy-based alternate-location selection and optional biological assemblies.
+It supports the organic and halogen elements in the packaged atomic-property table; unsupported
+elements, including metals without an approved radius policy, raise `ValueError`.
+All-atom descriptors and the original `ca_residue` descriptors are different feature
+spaces and must not be compared with each other. The original APIs continue to use
+`ca_residue` unchanged.
+
+Heterogeneous files and multi-model ensembles can be processed together. Rows retain
+their structure IDs and representation, and malformed samples can either abort or be
+recorded and skipped:
+
+```python
+batch = z.calculate_structure_descriptors_batch(
+    ["protein.pdb", "ensemble.cif"],
+    representation="all_atom_gaussian",
+    model=None,
+    mode=1,
+    on_error="skip",
+)
+
+batch.ids
+batch.representation
+batch.values
+batch.failures
+```
+
+The heterogeneous runner sorts grids by volume, greedily chunks them under a voxel
+budget, rounds padded dimensions to multiples of eight, and repeats then slices the
+last partial device batch. The descriptor kernel itself is unchanged.
+
 ## Cache Data
 
 The repository includes cache files for lower-order workflows:

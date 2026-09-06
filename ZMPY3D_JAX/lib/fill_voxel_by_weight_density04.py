@@ -18,6 +18,8 @@ def fill_voxel_by_weight_density_host(
     residue_weight_map: Dict[str, float],
     grid_width: float,
     residue_box: Dict[str, np.ndarray],
+    *,
+    point_weight_multipliers: Sequence[float] | None = None,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """Fills a 3D voxel grid with density values based on atomic coordinates, amino acid types,
     and pre-calculated residue density boxes. This effectively converts a discrete atomic
@@ -39,6 +41,15 @@ def fill_voxel_by_weight_density_host(
 
     if len(aa_name_list) != xyz.shape[0]:
         raise ValueError("aa_name_list must contain one residue name per coordinate")
+
+    if point_weight_multipliers is None:
+        multipliers = np.ones(xyz.shape[0], dtype=_config.FLOAT_DTYPE)
+    else:
+        multipliers = np.asarray(point_weight_multipliers, dtype=_config.FLOAT_DTYPE).reshape(-1)
+        if multipliers.shape[0] != xyz.shape[0]:
+            raise ValueError("point_weight_multipliers must contain one value per coordinate")
+        if not np.all(np.isfinite(multipliers)) or np.any(multipliers < 0):
+            raise ValueError("point_weight_multipliers must be finite and non-negative")
 
     if xyz.shape[0] == 0:
         return np.zeros((0, 0, 0), dtype=_config.FLOAT_DTYPE), np.full(
@@ -90,7 +101,9 @@ def fill_voxel_by_weight_density_host(
         start = coord_box_corner
         end = coord_box_corner + box_edge
 
-        voxel3d[start[0] : end[0], start[1] : end[1], start[2] : end[2]] += aa_box
+        voxel3d[start[0] : end[0], start[1] : end[1], start[2] : end[2]] += (
+            aa_box * multipliers[i]
+        )
 
     return voxel3d, np.asarray(corner_xyz, dtype=_config.FLOAT_DTYPE)
 
@@ -101,10 +114,17 @@ def fill_voxel_by_weight_density04(
     residue_weight_map: Dict[str, float],
     grid_width: float,
     residue_box: Dict[str, np.ndarray],
+    *,
+    point_weight_multipliers: Sequence[float] | None = None,
 ) -> Tuple[chex.Array, chex.Array]:
     """Fill a voxel grid on the host and transfer the completed arrays to JAX."""
     voxel3d, corner_xyz = fill_voxel_by_weight_density_host(
-        xyz, aa_name_list, residue_weight_map, grid_width, residue_box
+        xyz,
+        aa_name_list,
+        residue_weight_map,
+        grid_width,
+        residue_box,
+        point_weight_multipliers=point_weight_multipliers,
     )
     return jnp.asarray(voxel3d, dtype=_config.FLOAT_DTYPE), jnp.asarray(
         corner_xyz, dtype=_config.FLOAT_DTYPE

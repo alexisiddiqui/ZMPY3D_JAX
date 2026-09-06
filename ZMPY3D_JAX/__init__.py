@@ -59,6 +59,13 @@ from .lib.descriptor_assembly import (
 from .lib.fill_voxel_by_weight_density04 import (
     fill_voxel_by_weight_density04 as fill_voxel_by_weight_density,
 )
+from .lib.atomic_gaussian_density import (
+    get_atomic_gaussian_density_cache as get_atomic_gaussian_density_cache,
+)
+from .lib.atomic_properties import (
+    get_atomic_mass_map as get_atomic_mass_map,
+    get_bondi_vdw_radius_map as get_bondi_vdw_radius_map,
+)
 from .lib.get_3dzd_121_descriptor02 import get_3dzd_121_descriptor02 as get_3dzd_121_descriptor
 from .lib.get_bbox_moment_xyz_sample01 import (
     get_bbox_moment_xyz_sample01 as get_bbox_moment_xyz_sample,
@@ -68,6 +75,10 @@ from .lib.get_descriptor_property import get_descriptor_property as get_descript
 from .lib.get_global_parameter02 import get_global_parameter02 as get_global_parameter
 from .lib.get_mean_invariant03 import get_mean_invariant03 as get_mean_invariant
 from .lib.get_pdb_xyz_ca02 import get_pdb_xyz_ca02 as get_pdb_xyz_ca
+from .lib.structure_io import (
+    AtomicStructure as AtomicStructure,
+    load_atomic_structures as load_atomic_structures,
+)
 from .lib.get_residue_gaussian_density_cache02 import (
     get_residue_gaussian_density_cache02 as get_residue_gaussian_density_cache,
 )
@@ -84,7 +95,12 @@ from .lib.get_transform_matrix_from_ab_list02 import (
 from .lib.set_pdb_xyz_rot_m_01 import set_pdb_xyz_rot_m_01 as set_pdb_xyz_rot
 from .ZMPY3D_CLI_BatchShapeScore import ZMPY3D_CLI_BatchShapeScore
 from .ZMPY3D_CLI_BatchSuperA2B import ZMPY3D_CLI_BatchSuperA2B
-from .ZMPY3D_CLI_BatchZM import ZMPY3D_CLI_BatchZM
+from .ZMPY3D_CLI_BatchZM import (
+    StructureDescriptorBatch,
+    StructureFailure,
+    ZMPY3D_CLI_BatchZM,
+    calculate_structure_descriptors_batch,
+)
 from .ZMPY3D_CLI_ShapeScore import ZMPY3D_CLI_ShapeScore
 from .ZMPY3D_CLI_SuperA2B import ZMPY3D_CLI_SuperA2B
 from .ZMPY3D_CLI_ZM import ZMPY3D_CLI_ZM

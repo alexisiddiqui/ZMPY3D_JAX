@@ -26,6 +26,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 import os
 import pickle
 from functools import partial
+from pathlib import Path
 from typing import Any, NamedTuple, Sequence
 
 import jax
@@ -40,6 +41,7 @@ from ZMPY3D_JAX.lib.batched_descriptor import (
 from ZMPY3D_JAX.lib.fill_voxel_by_weight_density04 import (
     fill_voxel_by_weight_density_host,
 )
+from ZMPY3D_JAX.lib.structure_voxel import voxelize_structure
 
 
 class _BatchZMRuntime(NamedTuple):
@@ -49,6 +51,28 @@ class _BatchZMRuntime(NamedTuple):
     bbox_to_zm_cache: z.BBoxToZMCache
     x64_bbox_to_zm_cache: z.BBoxToZMCache | None
     descriptor_cache: z.DescriptorAssemblyCache
+
+
+class StructureFailure(NamedTuple):
+    id: str
+    error: str
+
+
+class StructureDescriptorBatch(NamedTuple):
+    """Identified descriptor rows from one representation feature space."""
+
+    ids: tuple[str, ...]
+    representation: str
+    descriptors: z.DescriptorVector
+    failures: tuple[StructureFailure, ...]
+
+    @property
+    def values(self):
+        return self.descriptors.values
+
+    @property
+    def is_valid(self):
+        return self.descriptors.is_valid
 
 
 def _prepare_batch_runtime(grid_width: float, max_order: int) -> _BatchZMRuntime:
@@ -117,6 +141,32 @@ def _descriptor_width(
     if mode in (1, 2):
         width += int(cache.descriptor_indices.shape[0])
     return width
+
+
+def _round_shape(shape: Sequence[int], multiple: int = 8) -> tuple[int, int, int]:
+    return tuple(((int(size) + multiple - 1) // multiple) * multiple for size in shape)
+
+
+def _chunk_by_voxel_budget(items, batch_size: int, voxel_budget: int):
+    """Sort by volume and greedily form shape-rounded device chunks."""
+    ordered = sorted(items, key=lambda item: int(np.prod(item[2].shape)))
+    chunks = []
+    current = []
+    padded_shape = (0, 0, 0)
+    for item in ordered:
+        candidate_shape = _round_shape(
+            tuple(max(padded_shape[axis], item[2].shape[axis]) for axis in range(3))
+        )
+        candidate_cost = (len(current) + 1) * int(np.prod(candidate_shape))
+        if current and (len(current) == batch_size or candidate_cost > voxel_budget):
+            chunks.append((current, padded_shape))
+            current = []
+            candidate_shape = _round_shape(item[2].shape)
+        current.append(item)
+        padded_shape = candidate_shape
+    if current:
+        chunks.append((current, padded_shape))
+    return chunks
 
 
 def _prepare_descriptor_runner(
@@ -284,6 +334,114 @@ def ZMPY3D_CLI_BatchZM(
         mode=Mode,
         batch_size=BatchSize,
         runtime=runtime,
+    )
+
+
+def calculate_structure_descriptors_batch(
+    paths: Sequence[str],
+    *,
+    representation: str,
+    grid_width: float = 1.0,
+    max_order: int = 6,
+    max_target_order: int = 5,
+    mode: int = 0,
+    batch_size: int = 16,
+    voxel_budget: int = 16_777_216,
+    model: int | None = 1,
+    chain_ids: Sequence[str] | str | None = None,
+    assembly_id: str | None = None,
+    include_hetero: bool = False,
+    include_water: bool = False,
+    include_hydrogens: bool = False,
+    on_error: str = "raise",
+) -> StructureDescriptorBatch:
+    """Describe heterogeneous structures without changing the JAX core."""
+    if representation not in {"ca_residue", "all_atom_gaussian"}:
+        raise ValueError("unknown representation")
+    if mode not in (0, 1, 2):
+        raise ValueError("mode must be 0, 1, or 2")
+    if max_target_order < 2 or max_target_order > max_order:
+        raise ValueError("max_target_order must be between 2 and max_order")
+    if on_error not in {"raise", "skip"}:
+        raise ValueError("on_error must be 'raise' or 'skip'")
+    if isinstance(batch_size, bool) or not isinstance(batch_size, int) or batch_size <= 0:
+        raise ValueError("batch_size must be a positive integer")
+    if isinstance(voxel_budget, bool) or not isinstance(voxel_budget, int) or voxel_budget <= 0:
+        raise ValueError("voxel_budget must be a positive integer")
+
+    runtime = _prepare_batch_runtime(grid_width, max_order)
+    if representation == "ca_residue":
+        weight_map = runtime.param["residue_weight_map"]
+        density_boxes = runtime.residue_box[grid_width]
+    else:
+        weight_map = z.get_atomic_mass_map()
+        density_boxes = z.get_atomic_gaussian_density_cache(grid_width)
+
+    prepared = []
+    failures = []
+    ordinal = 0
+    for path in paths:
+        try:
+            voxels = voxelize_structure(
+                path,
+                representation=representation,
+                grid_width=grid_width,
+                weight_map=weight_map,
+                density_boxes=density_boxes,
+                model=model,
+                chain_ids=chain_ids,
+                assembly_id=assembly_id,
+                include_hetero=include_hetero,
+                include_water=include_water,
+                include_hydrogens=include_hydrogens,
+            )
+        except Exception as error:
+            if on_error == "raise":
+                raise
+            failures.append(StructureFailure(str(Path(path)), str(error)))
+            continue
+        for sample_id, voxel in voxels:
+            prepared.append((ordinal, sample_id, voxel))
+            ordinal += 1
+
+    width = _descriptor_width(mode, max_target_order, runtime.descriptor_cache)
+    if not prepared:
+        empty = z.DescriptorVector(
+            values=jnp.empty((0, width), dtype=z.FLOAT_DTYPE),
+            is_valid=jnp.empty((0, width), dtype=bool),
+        )
+        return StructureDescriptorBatch((), representation, empty, tuple(failures))
+
+    runner = _prepare_descriptor_runner(
+        max_order=max_order,
+        max_target_order=max_target_order,
+        mode=mode,
+        runtime=runtime,
+    )
+    rows = []
+    for chunk, padded_shape in _chunk_by_voxel_budget(prepared, batch_size, voxel_budget):
+        volume = int(np.prod(padded_shape))
+        capacity = max(len(chunk), min(batch_size, max(1, voxel_budget // volume)))
+        padded = np.zeros((capacity, *padded_shape), dtype=z.FLOAT_DTYPE)
+        for index, (_, _, voxel) in enumerate(chunk):
+            padded[index, : voxel.shape[0], : voxel.shape[1], : voxel.shape[2]] = voxel
+        padded[len(chunk) :] = padded[len(chunk) - 1]
+        result = runner(jnp.asarray(padded, dtype=z.FLOAT_DTYPE))
+        for index, (item_ordinal, sample_id, _) in enumerate(chunk):
+            rows.append(
+                (item_ordinal, sample_id, result.values[index], result.is_valid[index])
+            )
+
+    rows.sort(key=lambda row: row[0])
+    descriptors = z.DescriptorVector(
+        values=jnp.stack([row[2] for row in rows]),
+        is_valid=jnp.stack([row[3] for row in rows]),
+    )
+    return StructureDescriptorBatch(
+        ids=tuple(row[1] for row in rows),
+        representation=representation,
+        descriptors=descriptors,
+        failures=tuple(failures),
     )
 
 
