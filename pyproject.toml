@@ -21,6 +21,7 @@ classifiers = [
   "Topic :: Scientific/Engineering :: Mathematics",
 ]
 dependencies = [
+  "biotite>=1.6.0",
   "chex",
   "gdown",
   "jax>=0.7.1",
