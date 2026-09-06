@@ -484,6 +484,33 @@ batch-16 allocator peaks were `303,990,784` bytes per-order and `378,566,400` by
 `24.53%` increase that passes the 25% gate. Degree grouping with nested rotation is now the
 production whole-pipeline default.
 
+### Checkpoint 0 host-preparation measurement
+
+The schema-v8 GPU harness now separates PDB parse, host accumulation, padding, and synchronized
+batched transfer, and records exact native/padded voxel bytes. A batch-16 order-20 run on the
+default alternating 6NT5/6NT6 workload used JAX/jaxlib `0.11.0` on CUDA device `0` (5 samples,
+2 repeats):
+
+| Batch-16 measurement | GPU result |
+| --- | ---: |
+| Parse | 1.241 ms/protein |
+| Host accumulation | 3.653 ms/protein |
+| Padding | 0.492 ms/protein |
+| Batched transfer | 0.369 ms/protein |
+| Host preparation + transfer | 5.755 ms/protein |
+| Accumulation + transfer | 4.022 ms/protein |
+| Accumulation + transfer share | 69.9% |
+| Padded transfer bytes/chunk | 46.8 MB |
+| Padding fraction | 20.7% |
+| Prepared end-to-end | 7.268 ms/protein |
+| Compiled device core | 1.301 ms/protein |
+
+The Checkpoint 0 gate passes: accumulation plus transfer exceeds `0.5 ms/protein` and `10%`
+of host-prep plus transfer. This validates retaining size-bucketing, vectorized host voxelization,
+and device-scatter voxelization in the roadmap. These numbers use the homogeneous committed
+6NT5/6NT6 workload; the heterogeneous FoldBench manifest still needs to be run before using the
+result as the production padding/transfer estimate.
+
 ## Previous Batched Stage Profile
 
 The clean, sequentially executed schema-v2 profile used 5 repeats, 9 samples, x64, mixed

@@ -284,9 +284,11 @@ env -u LD_LIBRARY_PATH ZMPY3D_BENCHMARK_BACKEND=gpu \
 ```
 
 By default it profiles the production float32/mixed-precision order-20 path with alternating
-6NT5/6NT6 fixtures at batch sizes 2 and 16. Override these with `ZMPY3D_BATCH_SIZES` and
-`ZMPY3D_BATCH_MAX_ORDER`, and control sampling with `ZMPY3D_BATCH_REPEATS` and
-`ZMPY3D_BATCH_SAMPLES`. The schema-v7 JSON separates host preparation, transfer, first compilation,
+6NT5/6NT6 fixtures at batch sizes 2 and 16. Set `ZMPY3D_BATCH_INPUT_MANIFEST` to a text file
+containing one PDB path per line to profile a heterogeneous production workload. Override the
+batch sizes with `ZMPY3D_BATCH_SIZES` and the order with `ZMPY3D_BATCH_MAX_ORDER`, and control
+sampling with `ZMPY3D_BATCH_REPEATS` and `ZMPY3D_BATCH_SAMPLES`. The schema-v8 JSON separates
+parse, host accumulation, padding, synchronized batched transfer, first compilation,
 warmed device-core throughput, whole-pipeline JIT throughput, prepared end-to-end throughput, and
 production Mode 0/1/2 timings. It records both fused normalization methods and a diagnostic split
 of compact AB candidates, rotation, invariant reduction, moments, 3DZD, and assembly. Candidate

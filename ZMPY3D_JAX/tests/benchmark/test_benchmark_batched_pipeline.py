@@ -16,6 +16,7 @@ import jax
 import jax.numpy as jnp
 import jaxlib
 import numpy as np
+import pytest
 
 import ZMPY3D_JAX as z
 
@@ -108,6 +109,32 @@ def _batch_sizes() -> tuple[int, ...]:
     if not values or any(value <= 0 for value in values):
         raise ValueError("ZMPY3D_BATCH_SIZES must be comma-separated positive integers")
     return values
+
+
+def _benchmark_input_paths() -> list[str]:
+    configured = os.getenv("ZMPY3D_BATCH_INPUT_MANIFEST")
+    if not configured:
+        return [str(REPO_ROOT / "6NT5.pdb"), str(REPO_ROOT / "6NT6.pdb")]
+
+    manifest = Path(configured).expanduser()
+    if not manifest.is_file():
+        raise ValueError(f"ZMPY3D_BATCH_INPUT_MANIFEST is not a file: {manifest}")
+    paths = []
+    for line in manifest.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        path = Path(line).expanduser()
+        paths.append(str(path if path.is_absolute() else manifest.parent / path))
+    if not paths:
+        raise ValueError(f"ZMPY3D_BATCH_INPUT_MANIFEST is empty: {manifest}")
+    missing = [path for path in paths if not Path(path).is_file()]
+    if missing:
+        raise ValueError(
+            "ZMPY3D_BATCH_INPUT_MANIFEST contains missing PDB files: "
+            + ", ".join(missing)
+        )
+    return paths
 
 
 def _time_call(function: Callable[[], Any]) -> tuple[Any, float]:
@@ -238,19 +265,91 @@ def _rank_stages(stage_summaries: dict[str, dict[str, Any]]) -> list[dict[str, A
     return rows
 
 
-def _host_voxels(paths: list[str], runtime: _BatchZMRuntime) -> list[np.ndarray]:
-    voxels = []
+def _profile_host_preparation(
+    paths: list[str], runtime: _BatchZMRuntime, grid_width: float = 1.0
+) -> tuple[list[np.ndarray], np.ndarray, dict[str, Any]]:
+    """Run and time the production parse -> fill -> pad host sequence once."""
+    total_start = time.perf_counter_ns()
+    host_voxels = []
+    structures = []
+    parse_seconds = 0.0
+    accumulate_seconds = 0.0
+    residue_box = runtime.residue_box[grid_width]
+
     for path in paths:
+        parse_start = time.perf_counter_ns()
         xyz, residues = z.get_pdb_xyz_ca(path)
-        voxel, _ = fill_voxel_by_weight_density_host(
+        parse_elapsed = (time.perf_counter_ns() - parse_start) / 1e9
+
+        accumulate_start = time.perf_counter_ns()
+        voxel, _corner = fill_voxel_by_weight_density_host(
             xyz,
             residues,
             runtime.param["residue_weight_map"],
-            1.0,
-            runtime.residue_box[1.0],
+            grid_width,
+            residue_box,
         )
-        voxels.append(voxel)
-    return voxels
+        accumulate_elapsed = (time.perf_counter_ns() - accumulate_start) / 1e9
+
+        parse_seconds += parse_elapsed
+        accumulate_seconds += accumulate_elapsed
+        host_voxels.append(voxel)
+        structures.append(
+            {
+                "input": Path(path).stem,
+                "ca_count": int(np.asarray(xyz).shape[0]),
+                "voxel_shape": list(voxel.shape),
+                "native_cells": int(np.prod(voxel.shape)),
+                "parse_seconds": parse_elapsed,
+                "accumulate_seconds": accumulate_elapsed,
+            }
+        )
+
+    pad_start = time.perf_counter_ns()
+    padded_host = pad_voxel_batch(host_voxels)
+    pad_seconds = (time.perf_counter_ns() - pad_start) / 1e9
+    total_seconds = (time.perf_counter_ns() - total_start) / 1e9
+    return host_voxels, padded_host, {
+        "total_seconds": total_seconds,
+        "parse_seconds": parse_seconds,
+        "accumulate_seconds": accumulate_seconds,
+        "pad_seconds": pad_seconds,
+        "structures": structures,
+    }
+
+
+def _sample_host_preparation(
+    paths: list[str],
+    runtime: _BatchZMRuntime,
+    *,
+    grid_width: float,
+    repeats: int,
+    sample_count: int,
+) -> tuple[list[np.ndarray], np.ndarray, dict[str, Any], dict[str, list[float]]]:
+    stage_samples = {
+        "parse": [],
+        "accumulate": [],
+        "pad": [],
+        "total": [],
+    }
+    first_profile = None
+    host_voxels = None
+    padded_host = None
+    for _sample_index in range(sample_count):
+        for _repeat_index in range(repeats):
+            host_voxels, padded_host, profile = _profile_host_preparation(
+                paths, runtime, grid_width
+            )
+            if first_profile is None:
+                first_profile = profile
+            stage_samples["parse"].append(profile["parse_seconds"])
+            stage_samples["accumulate"].append(profile["accumulate_seconds"])
+            stage_samples["pad"].append(profile["pad_seconds"])
+            stage_samples["total"].append(profile["total_seconds"])
+    assert host_voxels is not None
+    assert padded_host is not None
+    assert first_profile is not None
+    return host_voxels, padded_host, first_profile, stage_samples
 
 
 def _run_core(
@@ -404,10 +503,52 @@ def _summarize_stage_profile(
 
 
 def _validate_payload(payload: dict[str, Any]) -> None:
-    assert payload["schema_version"] == 7
+    assert payload["schema_version"] == 8
     assert payload["configuration"]["batch_sizes"]
     for workload in payload["results"]["workloads"].values():
         assert 0 < workload["padding_utilization"] <= 1
+        host_preparation = workload["host_preparation"]
+        assert set(host_preparation["once_breakdown_seconds"]) == {
+            "parse",
+            "accumulate",
+            "pad",
+        }
+        assert set(host_preparation["warmed"]) == {
+            "parse",
+            "accumulate",
+            "pad",
+            "total",
+        }
+        assert host_preparation["once_seconds"] > 0
+        assert sum(host_preparation["once_breakdown_seconds"].values()) <= (
+            host_preparation["once_seconds"] * 1.05
+        )
+        for summary in host_preparation["warmed"].values():
+            assert summary["median_seconds"] > 0
+
+        storage = workload["voxel_storage"]
+        assert storage["native_cells"] > 0
+        assert storage["padded_cells"] >= storage["native_cells"]
+        assert storage["native_bytes"] > 0
+        assert storage["padded_bytes"] >= storage["native_bytes"]
+        assert storage["padding_fraction"] == pytest.approx(
+            1.0 - workload["padding_utilization"]
+        )
+        transfer_batched = workload["transfer_batched"]
+        assert transfer_batched["bytes"] == storage["padded_bytes"]
+        assert transfer_batched["bytes_per_protein"] == pytest.approx(
+            storage["padded_bytes"] / len(workload["input_sequence"])
+        )
+        assert transfer_batched["first_seconds"] > 0
+        assert transfer_batched["warmed"]["median_seconds"] > 0
+        checkpoint_gate = workload["checkpoint_0_gate"]
+        assert checkpoint_gate["evaluated"] in (True, False)
+        if checkpoint_gate["evaluated"]:
+            assert checkpoint_gate["passed"] in (True, False)
+        else:
+            assert checkpoint_gate["passed"] is None
+        assert checkpoint_gate["accumulate_plus_transfer_milliseconds_per_protein"] > 0
+        assert 0 < checkpoint_gate["accumulate_plus_transfer_share"] <= 1
         for section in (
             "transfer",
             "device_core",
@@ -491,18 +632,26 @@ def test_batched_pipeline_throughput_snapshot() -> None:
     repeats = _positive_env_int("ZMPY3D_BATCH_REPEATS", 2)
     sample_count = _positive_env_int("ZMPY3D_BATCH_SAMPLES", 5)
     batch_sizes = _batch_sizes()
-    fixture_paths = [str(REPO_ROOT / "6NT5.pdb"), str(REPO_ROOT / "6NT6.pdb")]
+    fixture_paths = _benchmark_input_paths()
 
     runtime, setup_seconds = _time_call(
         lambda: _prepare_batch_runtime(1.0, MAX_ORDER)
     )
     workloads = {}
     for batch_size in batch_sizes:
-        paths = [fixture_paths[index % 2] for index in range(batch_size)]
-        host_voxels, host_prepare_once = _time_call(
-            lambda: _host_voxels(paths, runtime)
+        paths = [fixture_paths[index % len(fixture_paths)] for index in range(batch_size)]
+        (
+            host_voxels,
+            padded_host,
+            host_prepare_profile,
+            host_prepare_samples,
+        ) = _sample_host_preparation(
+            paths,
+            runtime,
+            grid_width=1.0,
+            repeats=repeats,
+            sample_count=sample_count,
         )
-        padded_host = pad_voxel_batch(host_voxels)
 
         def transfer_sequential():
             return [
@@ -513,8 +662,8 @@ def test_batched_pipeline_throughput_snapshot() -> None:
         def transfer_batched():
             return jnp.asarray(padded_host, dtype=z.FLOAT_DTYPE)
 
-        sequential_device = transfer_sequential()
-        batched_device = transfer_batched()
+        sequential_device, _sequential_transfer_first = _time_call(transfer_sequential)
+        batched_device, batched_transfer_first = _time_call(transfer_batched)
         block_tree((sequential_device, batched_device))
 
         def sequential_core():
@@ -911,18 +1060,79 @@ def test_batched_pipeline_throughput_snapshot() -> None:
 
         padded_cells = int(np.prod(padded_host.shape))
         native_cells = sum(int(np.prod(voxel.shape)) for voxel in host_voxels)
+        voxel_dtype = np.dtype(z.FLOAT_DTYPE)
+        native_bytes = native_cells * voxel_dtype.itemsize
+        padded_bytes = int(padded_host.nbytes)
+        host_warmed = {
+            name: _summary(samples, batch_size)
+            for name, samples in host_prepare_samples.items()
+        }
+        host_plus_transfer_seconds = sum(
+            float(host_warmed[name]["median_seconds"])
+            for name in ("parse", "accumulate", "pad")
+        ) + float(np.median(transfer_samples[1]))
+        accumulate_plus_transfer_seconds = float(
+            host_warmed["accumulate"]["median_seconds"]
+        ) + float(np.median(transfer_samples[1]))
+        checkpoint_0_applicable = BENCHMARK_BACKEND == "gpu" and batch_size == 16
+        checkpoint_0_passed = (
+            accumulate_plus_transfer_seconds / batch_size >= 0.0005
+            and accumulate_plus_transfer_seconds / host_plus_transfer_seconds >= 0.10
+        )
         workloads[str(batch_size)] = {
             "input_sequence": [Path(path).stem for path in paths],
             "native_voxel_shapes": [list(voxel.shape) for voxel in host_voxels],
             "padded_voxel_shape": list(padded_host.shape),
             "padding_utilization": native_cells / padded_cells,
-            "host_preparation_once_seconds": host_prepare_once,
+            "host_preparation_once_seconds": host_prepare_profile["total_seconds"],
+            "host_preparation": {
+                "once_seconds": host_prepare_profile["total_seconds"],
+                "once_breakdown_seconds": {
+                    "parse": host_prepare_profile["parse_seconds"],
+                    "accumulate": host_prepare_profile["accumulate_seconds"],
+                    "pad": host_prepare_profile["pad_seconds"],
+                },
+                "warmed": host_warmed,
+                "structures": host_prepare_profile["structures"],
+            },
+            "voxel_storage": {
+                "dtype": str(voxel_dtype),
+                "native_cells": native_cells,
+                "padded_cells": padded_cells,
+                "native_bytes": native_bytes,
+                "padded_bytes": padded_bytes,
+                "padding_bytes": padded_bytes - native_bytes,
+                "padding_fraction": 1.0 - native_cells / padded_cells,
+            },
             "first_device_execution": {
                 "sequential_seconds": sequential_first,
                 "batched_seconds": batched_first,
                 "whole_pipeline_jit_seconds": compiled_first,
             },
             "transfer": _comparison(*transfer_samples, protein_count=batch_size),
+            "transfer_batched": {
+                "dtype": str(voxel_dtype),
+                "shape": list(padded_host.shape),
+                "bytes": padded_bytes,
+                "bytes_per_protein": padded_bytes / batch_size,
+                "first_seconds": batched_transfer_first,
+                "warmed": _summary(transfer_samples[1], batch_size),
+            },
+            "checkpoint_0_gate": {
+                "evaluated": checkpoint_0_applicable,
+                "passed": checkpoint_0_passed if checkpoint_0_applicable else None,
+                "minimum_accumulate_plus_transfer_milliseconds_per_protein": 0.5,
+                "minimum_accumulate_plus_transfer_share": 0.10,
+                "accumulate_plus_transfer_milliseconds_per_protein": (
+                    1000.0 * accumulate_plus_transfer_seconds / batch_size
+                ),
+                "host_preparation_plus_transfer_milliseconds_per_protein": (
+                    1000.0 * host_plus_transfer_seconds / batch_size
+                ),
+                "accumulate_plus_transfer_share": (
+                    accumulate_plus_transfer_seconds / host_plus_transfer_seconds
+                ),
+            },
             "device_core": _comparison(*core_samples, protein_count=batch_size),
             "compiled_device_core": _comparison(
                 *compiled_core_samples, protein_count=batch_size
@@ -973,12 +1183,13 @@ def test_batched_pipeline_throughput_snapshot() -> None:
         }
 
     payload = {
-        "schema_version": 7,
+        "schema_version": 8,
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
         "comparison_mode": "informational",
         "configuration": {
             "batch_sizes": list(batch_sizes),
-            "inputs": ["6NT5.pdb", "6NT6.pdb"],
+            "inputs": [Path(path).stem for path in fixture_paths],
+            "input_manifest": os.getenv("ZMPY3D_BATCH_INPUT_MANIFEST"),
             "grid_width": 1.0,
             "max_order": MAX_ORDER,
             "max_target_order": MAX_TARGET_ORDER,
