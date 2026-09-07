@@ -273,17 +273,12 @@ def _run_worker(
             bbox_to_zm_cache=runtime.bbox_to_zm_cache,
             x64_bbox_to_zm_cache=x64_bbox_cache,
             rotation_cache=runtime.rotation_cache,
+            x64_rotation_cache=runtime.x64_rotation_cache,
             descriptor_cache=runtime.descriptor_cache,
         )
-        expected_descriptor = (
-            prototype_descriptors["moments_x64"]
-            if max_order >= 20
-            else descriptor
-        )
-        np.testing.assert_array_equal(
-            np.asarray(production_descriptor.values),
-            np.asarray(expected_descriptor.values),
-        )
+        assert production_descriptor.values.dtype == dtype
+        payload["production_descriptor_final"] = production_descriptor.values
+        payload["production_descriptor_valid"] = production_descriptor.is_valid
 
     if reference_input is not None:
         with np.load(reference_input) as reference:
@@ -553,8 +548,16 @@ def _compare(max_order: int, backend: str, directory: Path) -> dict[str, object]
             "prototype_frontiers": prototype_frontiers,
         }
         if max_order == 20:
+            np.testing.assert_array_equal(
+                reference["descriptor_valid"],
+                target["production_descriptor_valid"],
+            )
+            result["production_descriptor"] = _stage_metrics(
+                reference["descriptor_final"],
+                target["production_descriptor_final"],
+            )
             result["production_weighted_score"] = _weighted_score_metrics(
-                reference, target
+                reference, target, "production_descriptor_final"
             )
 
     for metrics in result["stages"].values():

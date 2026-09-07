@@ -1,4 +1,6 @@
+import json
 import pickle
+import subprocess
 import sys
 from pathlib import Path
 
@@ -9,6 +11,14 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 import ZMPY3D_JAX as z
+from ZMPY3D_JAX.lib.superposition import (
+    SuperpositionFeatures,
+    calculate_pdb_superposition,
+    calculate_structure_moments,
+    calculate_superposition_features,
+    match_superposition_features,
+    prepare_superposition_runtime,
+)
 
 z.configure_for_scientific_computing(enable_x64=True)
 
@@ -125,6 +135,20 @@ def one_time_conversion(voxel3d, corner, grid_width, cache_data, global_params, 
     return center_scaled, ab_list_all, zm_list_all
 
 
+def legacy_pdb_conversion(path, cache_data, global_params, residue_box):
+    xyz, residue_names = z.get_pdb_xyz_ca(path)
+    voxel, corner = z.fill_voxel_by_weight_density(
+        xyz,
+        residue_names,
+        global_params["residue_weight_map"],
+        1.0,
+        residue_box[1.0],
+    )
+    return one_time_conversion(
+        voxel, corner, 1.0, cache_data, global_params
+    )
+
+
 class TestSuperposition:
     """Integration tests for molecular superposition using Zernike moments."""
 
@@ -191,6 +215,136 @@ class TestSuperposition:
         # Assert values are complex
         assert np.iscomplexobj(zm_list_a)
 
+    def test_fixed_device_features_match_legacy_compaction(
+        self, pdb_files, global_params, residue_box, cache_data
+    ):
+        legacy_center, legacy_pairs, legacy_values = legacy_pdb_conversion(
+            pdb_files["6NT5"], cache_data, global_params, residue_box
+        )
+        runtime = prepare_superposition_runtime()
+        center, raw = calculate_structure_moments(pdb_files["6NT5"], runtime)
+        features = calculate_superposition_features(center, raw, runtime)
+
+        pairs = np.asarray(features.pairs)
+        is_valid = np.asarray(features.is_valid)
+        values = np.asarray(features.values)
+        assert pairs.shape == (192, 2)
+        assert values.shape == (50, 192)
+        assert int(np.sum(is_valid)) == 96
+        assert np.all(np.isfinite(values[:, is_valid]))
+        np.testing.assert_allclose(
+            pairs[is_valid], legacy_pairs, rtol=1e-12, atol=1e-12
+        )
+        np.testing.assert_allclose(
+            values[:, is_valid], legacy_values, rtol=1e-12, atol=1e-12
+        )
+        np.testing.assert_allclose(center, legacy_center, rtol=1e-12, atol=1e-12)
+
+    def test_device_match_preserves_legacy_transform(
+        self, pdb_files, global_params, residue_box, cache_data
+    ):
+        center_a, pairs_a, values_a = legacy_pdb_conversion(
+            pdb_files["6NT5"], cache_data, global_params, residue_box
+        )
+        center_b, pairs_b, values_b = legacy_pdb_conversion(
+            pdb_files["6NT6"], cache_data, global_params, residue_box
+        )
+        similarity = np.abs(values_a.conj().T @ values_b)
+        index_a, index_b = np.argwhere(similarity == np.max(similarity))[0]
+        rotation_a = z.get_transform_matrix_from_ab_list(
+            pairs_a[index_a, 0], pairs_a[index_a, 1], center_a
+        )
+        rotation_b = z.get_transform_matrix_from_ab_list(
+            pairs_b[index_b, 0], pairs_b[index_b, 1], center_b
+        )
+        expected = np.linalg.solve(rotation_b, rotation_a)
+
+        runtime = prepare_superposition_runtime()
+        actual = calculate_pdb_superposition(
+            pdb_files["6NT5"], pdb_files["6NT6"], runtime
+        )
+        assert bool(actual.is_valid)
+        np.testing.assert_allclose(actual.matrix, expected, rtol=1e-10, atol=1e-8)
+
+    def test_invalid_fixed_slots_cannot_win(self):
+        pairs = np.asarray([[1.0 + 0.0j, 0.0j], [1.0 + 0.0j, 0.0j]])
+        features = SuperpositionFeatures(
+            center_scaled=np.zeros(3),
+            pairs=pairs,
+            is_valid=np.asarray([True, False]),
+            values=np.asarray([[1.0 + 0.0j, 1e12 + 0.0j]]),
+        )
+        match = match_superposition_features(features, features)
+        assert bool(match.is_valid)
+        assert int(match.index_a) == 0
+        assert int(match.index_b) == 0
+        np.testing.assert_allclose(match.matrix, np.eye(4), atol=1e-12)
+
+    def test_no_valid_fixed_slots_returns_failure(self):
+        features = SuperpositionFeatures(
+            center_scaled=np.zeros(3),
+            pairs=np.asarray([[1.0 + 0.0j, 0.0j]]),
+            is_valid=np.asarray([False]),
+            values=np.asarray([[1.0 + 0.0j]]),
+        )
+        match = match_superposition_features(features, features)
+        assert not bool(match.is_valid)
+        assert np.all(np.isnan(np.asarray(match.matrix)))
+
+    def test_public_single_and_batch_apis_agree(self, pdb_files):
+        single = z.ZMPY3D_CLI_SuperA2B(
+            pdb_files["6NT5"], pdb_files["6NT6"]
+        )
+        batch = z.ZMPY3D_CLI_BatchSuperA2B(
+            [pdb_files["6NT5"], pdb_files["6NT6"]],
+            [pdb_files["6NT6"], pdb_files["6NT5"]],
+        )
+        assert isinstance(single, np.ndarray)
+        assert single.shape == (4, 4)
+        assert all(isinstance(matrix, np.ndarray) for matrix in batch)
+        np.testing.assert_allclose(batch[0], single, rtol=1e-10, atol=1e-8)
+        np.testing.assert_allclose(
+            batch[1], np.linalg.inv(single), rtol=1e-10, atol=1e-8
+        )
+        with pytest.raises(ValueError, match="same length"):
+            z.ZMPY3D_CLI_BatchSuperA2B([pdb_files["6NT5"]], [])
+
+    def test_public_identity_transform(self, pdb_files):
+        matrix = z.ZMPY3D_CLI_SuperA2B(
+            pdb_files["6NT5"], pdb_files["6NT5"]
+        )
+        np.testing.assert_allclose(matrix, np.eye(4), rtol=0, atol=1e-10)
+
+    def test_float32_public_transform_matches_legacy_float32(self, pdb_files):
+        code = """
+import json
+import numpy as np
+import ZMPY3D_JAX as z
+z.configure_for_scientific_computing(enable_x64=False, platform="cpu")
+matrix = z.ZMPY3D_CLI_SuperA2B(%r, %r)
+print("MATRIX=" + json.dumps(np.asarray(matrix).tolist()))
+""" % (pdb_files["6NT5"], pdb_files["6NT6"])
+        completed = subprocess.run(
+            [sys.executable, "-c", code],
+            cwd=Path(__file__).resolve().parents[3],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        line = next(
+            item for item in completed.stdout.splitlines() if item.startswith("MATRIX=")
+        )
+        actual = np.asarray(json.loads(line.removeprefix("MATRIX=")))
+        reference = np.asarray(
+            [
+                [-0.95183879, 0.30658859, 0.00260342, 127.20359],
+                [-0.30659336, -0.95183927, -0.00167728, 181.72733],
+                [0.00196380, -0.00239469, 0.99999541, -16.491186],
+                [0.0, 0.0, 0.0, 1.0],
+            ]
+        )
+        np.testing.assert_allclose(actual, reference, rtol=2e-5, atol=2e-5)
+
     def test_transformation_matrix_calculation(
         self, pdb_files, global_params, residue_box, cache_data, output_dir
     ):
@@ -251,48 +405,12 @@ class TestSuperposition:
         # Save similarity matrix
         np.save(output_dir / "similarity_matrix.npy", m)
 
-    def test_pdb_transformation(
-        self, pdb_files, global_params, residue_box, cache_data, output_dir
-    ):
-        """Test application of transformation matrix to PDB file."""
-        grid_width = 1.0
-
-        # Calculate transformation matrix (reusing logic)
-        xyz_a, aa_name_list_a = z.get_pdb_xyz_ca(pdb_files["6NT5"])
-        voxel3d_a, corner_a = z.fill_voxel_by_weight_density(
-            xyz_a,
-            aa_name_list_a,
-            global_params["residue_weight_map"],
-            grid_width,
-            residue_box[grid_width],
+    def test_pdb_transformation(self, pdb_files, output_dir):
+        """Test application of the public A-to-B transformation to a PDB file."""
+        xyz_a, _ = z.get_pdb_xyz_ca(pdb_files["6NT5"])
+        target_rot_m = z.ZMPY3D_CLI_SuperA2B(
+            pdb_files["6NT5"], pdb_files["6NT6"]
         )
-        center_scaled_a, ab_list_a, zm_list_a = one_time_conversion(
-            voxel3d_a, corner_a, grid_width, cache_data, global_params
-        )
-
-        xyz_b, aa_name_list_b = z.get_pdb_xyz_ca(pdb_files["6NT6"])
-        voxel3d_b, corner_b = z.fill_voxel_by_weight_density(
-            xyz_b,
-            aa_name_list_b,
-            global_params["residue_weight_map"],
-            grid_width,
-            residue_box[grid_width],
-        )
-        center_scaled_b, ab_list_b, zm_list_b = one_time_conversion(
-            voxel3d_b, corner_b, grid_width, cache_data, global_params
-        )
-
-        m = np.abs(zm_list_a.conj().T @ zm_list_b)
-        max_value_index = np.where(m == np.max(m))
-        i, j = max_value_index[0][0], max_value_index[1][0]
-
-        rot_m_a = z.get_transform_matrix_from_ab_list(
-            ab_list_a[i, 0], ab_list_a[i, 1], center_scaled_a
-        )
-        rot_m_b = z.get_transform_matrix_from_ab_list(
-            ab_list_b[j, 0], ab_list_b[j, 1], center_scaled_b
-        )
-        target_rot_m = np.linalg.solve(rot_m_b, rot_m_a)
 
         # Apply transformation
         output_pdb = output_dir / "6NT5_transformed.pdb"

@@ -190,8 +190,13 @@ class TestCalculateABRotation:
             separate = calculate_ab_rotation_compact_candidates(
                 real_protein_zm, order
             )
+            tolerance = (
+                1e-14 if grouped.pairs.dtype == np.dtype(np.complex128) else 1e-7
+            )
             np.testing.assert_allclose(
-                grouped.pairs[index], separate.pairs, rtol=1e-14, atol=1e-14
+                grouped.pairs[index], separate.pairs,
+                rtol=tolerance,
+                atol=tolerance,
             )
             np.testing.assert_array_equal(
                 grouped.is_valid[index], separate.is_valid

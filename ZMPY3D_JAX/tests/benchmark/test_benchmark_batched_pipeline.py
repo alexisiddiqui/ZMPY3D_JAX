@@ -26,10 +26,13 @@ if BENCHMARK_BACKEND not in {"cpu", "gpu"}:
 z.configure_for_scientific_computing(enable_x64=False, platform=BENCHMARK_BACKEND)
 
 from ZMPY3D_JAX.ZMPY3D_CLI_BatchZM import (  # noqa: E402
+    _PREPARATION_WINDOW_BUDGET_MULTIPLIER,
     _BatchZMRuntime,
+    _chunk_by_voxel_budget,
     _prepare_batch_runtime,
     _prepare_descriptor_runner,
     _run_prepared_batch,
+    _run_voxel_window,
 )
 from ZMPY3D_JAX.lib.batched_descriptor import (  # noqa: E402
     _calculate_ab_compact_candidate_group_batch,
@@ -74,6 +77,8 @@ NORMALIZATION_REPRESENTATIONS = (
 )
 ROTATION_REDUCTIONS = ("scatter", "segmented_scan")
 MOMENT_REDUCTIONS = ("production_auto",)
+FLOAT32_LAYOUT_RTOL = 5e-5
+FLOAT32_LAYOUT_ATOL = 1e-5
 
 
 def _stage_names() -> tuple[str, ...]:
@@ -369,6 +374,7 @@ def _run_core(
         bbox_to_zm_cache=runtime.bbox_to_zm_cache,
         x64_bbox_to_zm_cache=runtime.x64_bbox_to_zm_cache,
         rotation_cache=runtime.rotation_cache,
+        x64_rotation_cache=runtime.x64_rotation_cache,
         descriptor_cache=runtime.descriptor_cache,
         normalization_representation=normalization_representation,
         rotation_reduction=rotation_reduction,
@@ -400,6 +406,7 @@ def _run_staged_core(
         bbox_to_zm_cache=runtime.bbox_to_zm_cache,
         x64_bbox_to_zm_cache=runtime.x64_bbox_to_zm_cache,
         rotation_cache=runtime.rotation_cache,
+        x64_rotation_cache=runtime.x64_rotation_cache,
         descriptor_cache=runtime.descriptor_cache,
         stage_executor=stage_executor,
         normalization_representation="companion_compact",
@@ -503,7 +510,7 @@ def _summarize_stage_profile(
 
 
 def _validate_payload(payload: dict[str, Any]) -> None:
-    assert payload["schema_version"] == 8
+    assert payload["schema_version"] == 9
     assert payload["configuration"]["batch_sizes"]
     for workload in payload["results"]["workloads"].values():
         assert 0 < workload["padding_utilization"] <= 1
@@ -534,6 +541,21 @@ def _validate_payload(payload: dict[str, Any]) -> None:
         assert storage["padding_fraction"] == pytest.approx(
             1.0 - workload["padding_utilization"]
         )
+        budgeted = workload["budgeted_scheduler"]
+        assert budgeted["chunk_count"] == len(budgeted["chunk_shapes"])
+        assert budgeted["padded_cells"] >= storage["native_cells"]
+        for count, *shape in budgeted["chunk_shapes"]:
+            if count > 1:
+                assert count * int(np.prod(shape)) <= budgeted["voxel_budget_cells"]
+        assert 0 <= budgeted["padding_fraction"] < 1
+        if budgeted["public_end_to_end"] is not None:
+            comparison = budgeted["public_end_to_end"]
+            assert comparison["sequential_over_batched_time_ratio"] > 0
+            np.testing.assert_allclose(
+                comparison["sequential_over_batched_time_ratio"]
+                * comparison["batched_over_sequential_time_ratio"],
+                1.0,
+            )
         transfer_batched = workload["transfer_batched"]
         assert transfer_batched["bytes"] == storage["padded_bytes"]
         assert transfer_batched["bytes_per_protein"] == pytest.approx(
@@ -633,6 +655,7 @@ def test_batched_pipeline_throughput_snapshot() -> None:
     sample_count = _positive_env_int("ZMPY3D_BATCH_SAMPLES", 5)
     batch_sizes = _batch_sizes()
     fixture_paths = _benchmark_input_paths()
+    voxel_budget = _positive_env_int("ZMPY3D_BATCH_VOXEL_BUDGET", 16_777_216)
 
     runtime, setup_seconds = _time_call(
         lambda: _prepare_batch_runtime(1.0, MAX_ORDER)
@@ -651,6 +674,13 @@ def test_batched_pipeline_throughput_snapshot() -> None:
             grid_width=1.0,
             repeats=repeats,
             sample_count=sample_count,
+        )
+        budget_items = [
+            (index, Path(path).stem, voxel)
+            for index, (path, voxel) in enumerate(zip(paths, host_voxels))
+        ]
+        budget_chunks = _chunk_by_voxel_budget(
+            budget_items, batch_size, voxel_budget
         )
 
         def transfer_sequential():
@@ -849,11 +879,17 @@ def test_batched_pipeline_throughput_snapshot() -> None:
 
         staged_result, candidates_by_order = _run_staged_core(batched_device, runtime)
         block_tree((staged_result, candidates_by_order))
+        staged_rtol = (
+            FLOAT32_LAYOUT_RTOL if z.FLOAT_DTYPE == jnp.float32 else 1e-10
+        )
+        staged_atol = (
+            FLOAT32_LAYOUT_ATOL if z.FLOAT_DTYPE == jnp.float32 else 1e-10
+        )
         np.testing.assert_allclose(
             np.asarray(staged_result.values),
             np.asarray(batched_result.values),
-            rtol=1e-10,
-            atol=1e-10,
+            rtol=staged_rtol,
+            atol=staged_atol,
             equal_nan=True,
         )
         np.testing.assert_array_equal(
@@ -946,9 +982,12 @@ def test_batched_pipeline_throughput_snapshot() -> None:
             name: function() for name, function in rotation_layout_functions.items()
         }
         block_tree(rotation_layout_results)
-        np.testing.assert_array_equal(
+        np.testing.assert_allclose(
             np.asarray(rotation_layout_results["flattened"]),
             np.asarray(rotation_layout_results["nested"]),
+            rtol=staged_rtol,
+            atol=staged_atol,
+            equal_nan=True,
         )
         rotation_layout_samples = _sample_functions(
             rotation_layout_functions,
@@ -1042,6 +1081,41 @@ def test_batched_pipeline_throughput_snapshot() -> None:
             mode=2,
             runtime=runtime,
         )
+
+        def input_order_prepared_voxels():
+            prepared = pad_voxel_batch(host_voxels)
+            return prepared_runner(jnp.asarray(prepared, dtype=z.FLOAT_DTYPE))
+
+        def budgeted_prepared_voxels():
+            rows = _run_voxel_window(
+                budget_items, batch_size, voxel_budget, prepared_runner
+            )
+            rows.sort(key=lambda row: row[0])
+            return z.DescriptorVector(
+                values=jnp.stack([row[2] for row in rows]),
+                is_valid=jnp.stack([row[3] for row in rows]),
+            )
+
+        input_order_prepared_result = input_order_prepared_voxels()
+        budgeted_prepared_result = budgeted_prepared_voxels()
+        block_tree((input_order_prepared_result, budgeted_prepared_result))
+        np.testing.assert_allclose(
+            np.asarray(budgeted_prepared_result.values),
+            np.asarray(input_order_prepared_result.values),
+            rtol=2e-3,
+            atol=2e-3,
+            equal_nan=True,
+        )
+        np.testing.assert_array_equal(
+            np.asarray(budgeted_prepared_result.is_valid),
+            np.asarray(input_order_prepared_result.is_valid),
+        )
+        budgeted_prepared_samples = _sample_pair(
+            input_order_prepared_voxels,
+            budgeted_prepared_voxels,
+            repeats=repeats,
+            sample_count=sample_count,
+        )
         sequential_end_to_end()
         batched_end_to_end()
         prefetched_end_to_end()
@@ -1058,8 +1132,58 @@ def test_batched_pipeline_throughput_snapshot() -> None:
             sample_count=sample_count,
         )
 
+        budgeted_public_samples = None
+        if batch_size == max(batch_sizes):
+
+            def input_order_public():
+                return z.ZMPY3D_CLI_BatchZM(
+                    paths, 1.0, MAX_ORDER, MAX_TARGET_ORDER, 2, batch_size
+                )
+
+            def budgeted_public():
+                return z.calculate_structure_descriptors_batch(
+                    paths,
+                    representation="ca_residue",
+                    grid_width=1.0,
+                    max_order=MAX_ORDER,
+                    max_target_order=MAX_TARGET_ORDER,
+                    mode=2,
+                    batch_size=batch_size,
+                    voxel_budget=voxel_budget,
+                )
+
+            input_order_result = input_order_public()
+            budgeted_result = budgeted_public()
+            block_tree((input_order_result, budgeted_result))
+            np.testing.assert_allclose(
+                np.asarray(budgeted_result.values),
+                np.asarray(input_order_result.values),
+                rtol=2e-3,
+                atol=2e-3,
+                equal_nan=True,
+            )
+            np.testing.assert_array_equal(
+                np.asarray(budgeted_result.is_valid),
+                np.asarray(input_order_result.is_valid),
+            )
+            assert budgeted_result.ids == tuple(
+                f"{Path(path)}:ca_residue" for path in paths
+            )
+            budgeted_public_samples = _sample_pair(
+                input_order_public,
+                budgeted_public,
+                repeats=repeats,
+                sample_count=sample_count,
+            )
+
         padded_cells = int(np.prod(padded_host.shape))
         native_cells = sum(int(np.prod(voxel.shape)) for voxel in host_voxels)
+        budgeted_padded_cells = sum(
+            len(chunk) * int(np.prod(shape)) for chunk, shape in budget_chunks
+        )
+        budgeted_peak_cells = max(
+            len(chunk) * int(np.prod(shape)) for chunk, shape in budget_chunks
+        )
         voxel_dtype = np.dtype(z.FLOAT_DTYPE)
         native_bytes = native_cells * voxel_dtype.itemsize
         padded_bytes = int(padded_host.nbytes)
@@ -1103,6 +1227,43 @@ def test_batched_pipeline_throughput_snapshot() -> None:
                 "padded_bytes": padded_bytes,
                 "padding_bytes": padded_bytes - native_bytes,
                 "padding_fraction": 1.0 - native_cells / padded_cells,
+            },
+            "budgeted_scheduler": {
+                "voxel_budget_cells": voxel_budget,
+                "preparation_window_budget_cells": (
+                    _PREPARATION_WINDOW_BUDGET_MULTIPLIER * voxel_budget
+                ),
+                "chunk_count": len(budget_chunks),
+                "chunk_shapes": [
+                    [len(chunk), *shape] for chunk, shape in budget_chunks
+                ],
+                "compiled_shape_signatures": [
+                    list(signature)
+                    for signature in sorted(
+                        {
+                            (len(chunk), *shape)
+                            for chunk, shape in budget_chunks
+                        }
+                    )
+                ],
+                "padded_cells": budgeted_padded_cells,
+                "padded_bytes": budgeted_padded_cells * voxel_dtype.itemsize,
+                "peak_chunk_cells": budgeted_peak_cells,
+                "peak_chunk_bytes": budgeted_peak_cells * voxel_dtype.itemsize,
+                "padding_fraction": 1.0
+                - native_cells / budgeted_padded_cells,
+                "padded_cell_reduction_from_input_order": 1.0
+                - budgeted_padded_cells / padded_cells,
+                "public_end_to_end": (
+                    _comparison(
+                        *budgeted_public_samples, protein_count=batch_size
+                    )
+                    if budgeted_public_samples is not None
+                    else None
+                ),
+                "warmed_prepared_voxels": _comparison(
+                    *budgeted_prepared_samples, protein_count=batch_size
+                ),
             },
             "first_device_execution": {
                 "sequential_seconds": sequential_first,
@@ -1183,7 +1344,7 @@ def test_batched_pipeline_throughput_snapshot() -> None:
         }
 
     payload = {
-        "schema_version": 8,
+        "schema_version": 9,
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
         "comparison_mode": "informational",
         "configuration": {
@@ -1198,7 +1359,8 @@ def test_batched_pipeline_throughput_snapshot() -> None:
             "repeats_per_sample": repeats,
             "jax_x64_enabled": bool(jax.config.x64_enabled),
             "configured_float_dtype": str(z.FLOAT_DTYPE),
-            "moment_precision": "auto_mixed_for_float32_order20_plus",
+            "moment_precision": "auto_strict_for_order20_plus",
+            "heterogeneous_voxel_budget_cells": voxel_budget,
             "jax_requested_backend": BENCHMARK_BACKEND,
             "voxelization": "sequential_numpy_host",
             "padding": "input_order_chunk_high_side_zero_padding",

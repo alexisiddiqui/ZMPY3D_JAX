@@ -129,6 +129,7 @@ def _run_worker(max_order: int, backend: str) -> None:
             bbox_to_zm_cache=runtime.bbox_to_zm_cache,
             x64_bbox_to_zm_cache=runtime.x64_bbox_to_zm_cache,
             rotation_cache=runtime.rotation_cache,
+            x64_rotation_cache=runtime.x64_rotation_cache,
             descriptor_cache=runtime.descriptor_cache,
         ),
         "compiled_descriptor_pipeline": lambda: compiled_descriptor(voxels),

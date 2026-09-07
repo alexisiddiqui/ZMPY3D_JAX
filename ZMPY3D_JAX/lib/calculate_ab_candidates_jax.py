@@ -5,7 +5,6 @@ import chex
 import jax
 import jax.numpy as jnp
 
-from ZMPY3D_JAX import config as _config
 from ZMPY3D_JAX.lib.eigen_root import _eigen_root_jax, batched_eigen_root
 
 
@@ -16,6 +15,13 @@ class ABRotationCandidates(NamedTuple):
     is_valid: chex.Array
 
 
+def _candidate_complex_dtype(*values: chex.Array):
+    """Preserve an explicit complex128 precision frontier when supplied."""
+    return jnp.result_type(
+        *(jnp.asarray(value).dtype for value in values), jnp.complex64
+    )
+
+
 def _compute_ab_candidates_impl(
     z_moment_raw: chex.Array, abconj_sol: chex.Array, ind_real: int
 ) -> tuple[chex.Array, chex.Array, chex.Array]:
@@ -23,8 +29,9 @@ def _compute_ab_candidates_impl(
     Compute ALL candidate a/b values with validity mask.
     Returns fixed-size arrays - filtering happens outside JIT.
     """
-    z_moment_raw = jnp.asarray(z_moment_raw, dtype=_config.COMPLEX_DTYPE)
-    abconj_sol = jnp.asarray(abconj_sol, dtype=_config.COMPLEX_DTYPE)
+    complex_dtype = _candidate_complex_dtype(z_moment_raw, abconj_sol)
+    z_moment_raw = jnp.asarray(z_moment_raw, dtype=complex_dtype)
+    abconj_sol = jnp.asarray(abconj_sol, dtype=complex_dtype)
     k_re = jnp.real(abconj_sol)
     k_im = jnp.imag(abconj_sol)
     k_im2, k_re2 = k_im**2, k_re**2
@@ -89,8 +96,9 @@ def _secondary_coefficients(
     z_moment_raw: chex.Array, abconj_sol: chex.Array, ind_real: int
 ) -> tuple[chex.Array, chex.Array]:
     """Return the two independent coefficients of the secondary polynomial."""
-    z_moment_raw = jnp.asarray(z_moment_raw, dtype=_config.COMPLEX_DTYPE)
-    abconj_sol = jnp.asarray(abconj_sol, dtype=_config.COMPLEX_DTYPE)
+    complex_dtype = _candidate_complex_dtype(z_moment_raw, abconj_sol)
+    z_moment_raw = jnp.asarray(z_moment_raw, dtype=complex_dtype)
+    abconj_sol = jnp.asarray(abconj_sol, dtype=complex_dtype)
     k_re = jnp.real(abconj_sol)
     k_im = jnp.imag(abconj_sol)
     k_im2, k_re2 = k_im**2, k_re**2
@@ -133,8 +141,9 @@ def _compute_compact_ab_candidates_impl(
     roots are always rejected by the real-root validity mask, so retaining two
     fixed slots per initial root halves the subsequent rotation capacity.
     """
-    z_moment_raw = jnp.asarray(z_moment_raw, dtype=_config.COMPLEX_DTYPE)
-    abconj_sol = jnp.asarray(abconj_sol, dtype=_config.COMPLEX_DTYPE)
+    complex_dtype = _candidate_complex_dtype(z_moment_raw, abconj_sol)
+    z_moment_raw = jnp.asarray(z_moment_raw, dtype=complex_dtype)
+    abconj_sol = jnp.asarray(abconj_sol, dtype=complex_dtype)
     coef4, coef3 = _secondary_coefficients(z_moment_raw, abconj_sol, ind_real)
 
     # Stable quadratic formula for a*t**2 + b*t - a.  The second root is
@@ -208,7 +217,9 @@ def _abconj_coefficients(
 
 def _stable_quadratic_roots(coefficients: chex.Array) -> chex.Array:
     """Solve one complex quadratic while avoiding the cancelled numerator."""
-    coefficients = jnp.asarray(coefficients, dtype=_config.COMPLEX_DTYPE)
+    coefficients = jnp.asarray(
+        coefficients, dtype=_candidate_complex_dtype(coefficients)
+    )
     a, b, c = coefficients
     nondegenerate = a != 0
     safe_a = jnp.where(nondegenerate, a, jnp.ones_like(a))
@@ -241,12 +252,26 @@ def _initial_abconj_roots(
     return _eigen_root_jax(coefficients)
 
 
-@partial(jax.jit, static_argnums=(1,))
+def _candidate_input(z_moment_raw: chex.Array, precision: str) -> chex.Array:
+    if precision == "configured":
+        from ZMPY3D_JAX import config as config
+
+        return jnp.asarray(z_moment_raw, dtype=config.COMPLEX_DTYPE)
+    if precision == "input":
+        return jnp.asarray(
+            z_moment_raw, dtype=_candidate_complex_dtype(z_moment_raw)
+        )
+    raise ValueError("precision must be 'configured' or 'input'")
+
+
+@partial(jax.jit, static_argnums=(1, 2))
 def calculate_ab_rotation_candidates(
-    z_moment_raw: chex.Array, target_order2_norm_rotate: int
+    z_moment_raw: chex.Array,
+    target_order2_norm_rotate: int,
+    precision: str = "configured",
 ) -> ABRotationCandidates:
     """Generate the single-order candidates without dynamic filtering."""
-    z_moment_raw = jnp.asarray(z_moment_raw, dtype=_config.COMPLEX_DTYPE)
+    z_moment_raw = _candidate_input(z_moment_raw, precision)
     coefficients = _abconj_coefficients(z_moment_raw, target_order2_norm_rotate)
     abconj_sol = _eigen_root_jax(coefficients)
     a, b, is_valid = _compute_ab_candidates_impl(z_moment_raw, abconj_sol, 2)
@@ -254,14 +279,15 @@ def calculate_ab_rotation_candidates(
     return ABRotationCandidates(pairs, is_valid.reshape(-1))
 
 
-@partial(jax.jit, static_argnums=(1, 2))
+@partial(jax.jit, static_argnums=(1, 2, 3))
 def calculate_ab_rotation_compact_candidates(
     z_moment_raw: chex.Array,
     target_order2_norm_rotate: int,
     root_strategy: str = "companion",
+    precision: str = "configured",
 ) -> ABRotationCandidates:
     """Generate only the two useful secondary roots per initial root."""
-    z_moment_raw = jnp.asarray(z_moment_raw, dtype=_config.COMPLEX_DTYPE)
+    z_moment_raw = _candidate_input(z_moment_raw, precision)
     coefficients = _abconj_coefficients(z_moment_raw, target_order2_norm_rotate)
     abconj_sol = _initial_abconj_roots(
         coefficients, target_order2_norm_rotate, root_strategy
@@ -273,17 +299,19 @@ def calculate_ab_rotation_compact_candidates(
     return ABRotationCandidates(pairs, is_valid.reshape(-1))
 
 
-@partial(jax.jit, static_argnums=(1, 2))
+@partial(jax.jit, static_argnums=(1, 2, 3))
 def calculate_ab_rotation_compact_candidate_group(
     z_moment_raw: chex.Array,
     target_orders: tuple[int, ...],
     root_strategy: str = "companion",
+    precision: str = "configured",
 ) -> ABRotationCandidates:
     """Generate same-degree compact candidates in one batched eigensolve."""
     if not target_orders or len({order % 2 for order in target_orders}) != 1:
         raise ValueError("target_orders must be non-empty and share one parity")
     if root_strategy not in ("companion", "analytic_odd"):
         raise ValueError("root_strategy must be 'companion' or 'analytic_odd'")
+    z_moment_raw = _candidate_input(z_moment_raw, precision)
     coefficients = jnp.stack(
         [_abconj_coefficients(z_moment_raw, order) for order in target_orders]
     )
@@ -300,12 +328,14 @@ def calculate_ab_rotation_compact_candidate_group(
     return ABRotationCandidates(pairs, is_valid.reshape((len(target_orders), -1)))
 
 
-@partial(jax.jit, static_argnums=(1,))
+@partial(jax.jit, static_argnums=(1, 2))
 def calculate_ab_rotation_all_candidates(
-    z_moment_raw: chex.Array, target_order2_norm_rotate: int
+    z_moment_raw: chex.Array,
+    target_order2_norm_rotate: int,
+    precision: str = "configured",
 ) -> ABRotationCandidates:
     """Generate candidates for every supported ``ind_real`` as fixed groups."""
-    z_moment_raw = jnp.asarray(z_moment_raw, dtype=_config.COMPLEX_DTYPE)
+    z_moment_raw = _candidate_input(z_moment_raw, precision)
     coefficients = _abconj_coefficients(z_moment_raw, target_order2_norm_rotate)
     abconj_sol = _eigen_root_jax(coefficients)
     ind_real_all = jnp.arange(2, z_moment_raw.shape[0], 2)

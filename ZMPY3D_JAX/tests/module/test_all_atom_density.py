@@ -1,3 +1,6 @@
+import importlib
+
+import jax.numpy as jnp
 import numpy as np
 import pytest
 from biotite.structure import AtomArray
@@ -7,7 +10,10 @@ import ZMPY3D_JAX as z
 from ZMPY3D_JAX.lib.fill_voxel_by_weight_density04 import (
     fill_voxel_by_weight_density_host,
 )
-from ZMPY3D_JAX.ZMPY3D_CLI_BatchZM import _chunk_by_voxel_budget
+from ZMPY3D_JAX.ZMPY3D_CLI_BatchZM import (
+    _chunk_by_voxel_budget,
+    _run_voxel_window,
+)
 
 
 def _atom_line(
@@ -147,7 +153,7 @@ def test_descriptor_representation_must_be_known(tmp_path):
         )
 
 
-def test_voxel_chunks_sort_and_round_without_exceeding_budget():
+def test_voxel_chunks_pack_shapes_and_round_without_exceeding_budget():
     items = [
         (0, "large", np.ones((17, 9, 9))),
         (1, "small", np.ones((3, 3, 3))),
@@ -155,10 +161,101 @@ def test_voxel_chunks_sort_and_round_without_exceeding_budget():
     ]
     chunks = _chunk_by_voxel_budget(items, batch_size=2, voxel_budget=20_000)
     flattened_ids = [item[1] for chunk, _ in chunks for item in chunk]
-    assert flattened_ids == ["small", "medium", "large"]
+    assert flattened_ids == ["large", "medium", "small"]
     for chunk, shape in chunks:
         assert all(size % 8 == 0 for size in shape)
         assert len(chunk) * np.prod(shape) <= 20_000
+
+    oversized = [(0, "oversized", np.ones((17, 17, 17)))]
+    chunks = _chunk_by_voxel_budget(
+        oversized, batch_size=2, voxel_budget=1_000
+    )
+    assert len(chunks) == 1
+    assert len(chunks[0][0]) == 1
+    assert np.prod(chunks[0][1]) > 1_000
+
+
+def test_voxel_chunks_prefer_compatible_axis_shapes():
+    items = [
+        (0, "x-long", np.ones((24, 8, 8))),
+        (1, "y-long", np.ones((8, 24, 8))),
+        (2, "x-near", np.ones((23, 8, 8))),
+        (3, "y-near", np.ones((8, 23, 8))),
+    ]
+
+    chunks = _chunk_by_voxel_budget(items, batch_size=2, voxel_budget=5_000)
+
+    assert [[item[1] for item in chunk] for chunk, _ in chunks] == [
+        ["x-long", "x-near"],
+        ["y-long", "y-near"],
+    ]
+    assert [shape for _, shape in chunks] == [(24, 8, 8), (8, 24, 8)]
+
+
+def test_voxel_window_uses_exact_chunk_sizes():
+    items = [
+        (0, "large", np.ones((17, 9, 9))),
+        (1, "small", np.ones((3, 3, 3))),
+        (2, "medium", np.ones((9, 7, 7))),
+    ]
+    observed_shapes = []
+
+    def descriptor_runner(voxels):
+        observed_shapes.append(voxels.shape)
+        values = jnp.sum(voxels, axis=(1, 2, 3))[:, None]
+        return z.DescriptorVector(
+            values=values, is_valid=jnp.ones_like(values, bool)
+        )
+
+    rows = _run_voxel_window(
+        items, batch_size=2, voxel_budget=20_000, descriptor_runner=descriptor_runner
+    )
+
+    assert [shape[0] for shape in observed_shapes] == [2, 1]
+    assert [row[0] for row in rows] == [0, 2, 1]
+    assert [float(row[2][0]) for row in rows] == [1377.0, 441.0, 27.0]
+
+
+def test_heterogeneous_batch_flushes_bounded_preparation_windows(monkeypatch):
+    module = importlib.import_module("ZMPY3D_JAX.ZMPY3D_CLI_BatchZM")
+    observed_windows = []
+
+    monkeypatch.setattr(
+        module,
+        "voxelize_structure",
+        lambda file_name, **_kwargs: [
+            (f"{file_name}:model=1", np.ones((5, 5, 5), dtype=np.float32))
+        ],
+    )
+    monkeypatch.setattr(
+        module, "_prepare_descriptor_runner", lambda **_kwargs: object()
+    )
+
+    def run_window(items, _batch_size, _voxel_budget, _descriptor_runner):
+        observed_windows.append(len(items))
+        return [
+            (
+                ordinal,
+                sample_id,
+                jnp.full((16,), ordinal, dtype=z.FLOAT_DTYPE),
+                jnp.ones((16,), dtype=bool),
+            )
+            for ordinal, sample_id, _voxel in items
+        ]
+
+    monkeypatch.setattr(module, "_run_voxel_window", run_window)
+    paths = [f"structure-{index}.pdb" for index in range(18)]
+    result = module.calculate_structure_descriptors_batch(
+        paths,
+        representation="ca_residue",
+        mode=1,
+        batch_size=16,
+        voxel_budget=512,
+    )
+
+    assert observed_windows == [16, 2]
+    assert result.ids == tuple(f"{path}:model=1" for path in paths)
+    np.testing.assert_array_equal(np.asarray(result.values[:, 0]), np.arange(18))
 
 
 def test_heterogeneous_batch_returns_ids_representation_and_failures(tmp_path):

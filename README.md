@@ -222,9 +222,12 @@ batch.values
 batch.failures
 ```
 
-The heterogeneous runner sorts grids by volume, greedily chunks them under a voxel
-budget, rounds padded dimensions to multiples of eight, and repeats then slices the
-last partial device batch. The descriptor kernel itself is unchanged.
+The heterogeneous runner queues at most four voxel budgets of prepared grids at a
+time, packs compatible shapes by their incremental padded cost under the device voxel
+budget, and rounds padded dimensions to multiples of eight. Partial chunks use their
+actual sample count; a structure larger than the budget runs alone. Order-20 batches
+use a strict float64 internal pipeline by default, including normalization, and cast
+only the completed descriptor back to the configured public dtype.
 
 ## Cache Data
 
@@ -396,6 +399,9 @@ the 25% memory-growth gate.
 The focused CUDA regression suite passed all six tests. Order-20 6NT5/6NT6 retained score error
 `0.00294755`, difference cosine `0.99976075`, separation ratio `0.99944251`, candidate counts
 `8/4/8/4`, and bitwise repeatability over five direct and whole-JIT executions.
+Those figures predate the strict order-20 precision policy and do not establish heterogeneous
+padding invariance; use the current padding regression and collect fresh target-hardware
+throughput measurements before treating them as production order-20 results.
 
 Run a focused module test:
 

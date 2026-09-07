@@ -16,20 +16,27 @@ def _radius_statistics_impl(
     volume_mass: float,
     default_radius_multiplier: float,
 ) -> Tuple[chex.Array, chex.Array, chex.Array]:
-    voxel3d = jnp.asarray(voxel3d, dtype=_config.FLOAT_DTYPE)
-    center = jnp.asarray(center, dtype=_config.FLOAT_DTYPE)
-    volume_mass = jnp.asarray(volume_mass, dtype=_config.FLOAT_DTYPE)
-    default_radius_multiplier = jnp.asarray(default_radius_multiplier, dtype=_config.FLOAT_DTYPE)
+    float_dtype = jnp.result_type(
+        jnp.asarray(voxel3d).dtype,
+        jnp.asarray(center).dtype,
+        jnp.asarray(volume_mass).dtype,
+    )
+    voxel3d = jnp.asarray(voxel3d, dtype=float_dtype)
+    center = jnp.asarray(center, dtype=float_dtype)
+    volume_mass = jnp.asarray(volume_mass, dtype=float_dtype)
+    default_radius_multiplier = jnp.asarray(
+        default_radius_multiplier, dtype=float_dtype
+    )
 
     has_weight = voxel3d > 0
     x_offset = (
-        jnp.arange(voxel3d.shape[0], dtype=_config.FLOAT_DTYPE) - center[0]
+        jnp.arange(voxel3d.shape[0], dtype=float_dtype) - center[0]
     )[:, None, None]
     y_offset = (
-        jnp.arange(voxel3d.shape[1], dtype=_config.FLOAT_DTYPE) - center[1]
+        jnp.arange(voxel3d.shape[1], dtype=float_dtype) - center[1]
     )[None, :, None]
     z_offset = (
-        jnp.arange(voxel3d.shape[2], dtype=_config.FLOAT_DTYPE) - center[2]
+        jnp.arange(voxel3d.shape[2], dtype=float_dtype) - center[2]
     )[None, None, :]
     voxel_dist2center_squared = (
         x_offset * x_offset + y_offset * y_offset + z_offset * z_offset
@@ -101,7 +108,10 @@ def calculate_molecular_radius03(
 ) -> Tuple[chex.Array, chex.Array]:
     """Calculate average and maximum molecular radii with fixed-shape reductions."""
     has_weight, average_radius, max_radius = _calculate_molecular_radius_jax(
-        voxel3d, center, volume_mass, default_radius_multiplier
+        jnp.asarray(voxel3d, dtype=_config.FLOAT_DTYPE),
+        jnp.asarray(center, dtype=_config.FLOAT_DTYPE),
+        jnp.asarray(volume_mass, dtype=_config.FLOAT_DTYPE),
+        default_radius_multiplier,
     )
     _raise_for_empty_density(has_weight)
     return average_radius, max_radius
@@ -116,7 +126,10 @@ def calculate_molecular_radius_and_bbox_samples(
     """Calculate radii and normalized bbox samples in one compiled kernel."""
     has_weight, average_radius, max_radius, sphere = (
         _calculate_molecular_radius_and_bbox_samples_jax(
-            voxel3d, center, volume_mass, default_radius_multiplier
+            jnp.asarray(voxel3d, dtype=_config.FLOAT_DTYPE),
+            jnp.asarray(center, dtype=_config.FLOAT_DTYPE),
+            jnp.asarray(volume_mass, dtype=_config.FLOAT_DTYPE),
+            default_radius_multiplier,
         )
     )
     _raise_for_empty_density(has_weight)

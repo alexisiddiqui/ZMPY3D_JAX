@@ -266,15 +266,33 @@ Resolved boundaries:
    once at the rotation boundary rather than using JAX dynamic filtering.
 6. Descriptor reductions, structural gathering, CLI assembly, and ShapeScore reductions stay in
    JAX. The regression helper sends JAX moments directly into the compiled descriptor kernel.
+7. Superposition now concatenates fixed candidates, rotates and assembles their features, performs
+   masked similarity selection, constructs transforms, and solves the final system in JAX. Only the
+   completed public result crosses to NumPy. The legacy candidate wrapper remains unchanged for
+   compatibility.
 
-Remaining unnecessary boundaries:
+### Completed device-native superposition
 
-1. `calculate_ab_rotation_all` transfers candidates and masks to NumPy; superposition workflows
-   immediately stack them before passing the batch into JAX rotation code.
-2. Superposition constructs transformation matrices in JAX and then transfers them into
-   `np.linalg.solve`; this small path should consistently use one array library.
+The single and sequential batch entry points now share one order-6 runtime and one fixed-shape
+superposition implementation. Each structure retains 192 candidate slots and a 96-slot validity
+mask. Invalid slots use harmless identity pairs during rotation and are excluded from similarity
+selection. Static indices derived from the rotation cache replace the previous transpose,
+`np.asarray`, NaN compaction, and hard-coded reshape. The final system uses `jnp.linalg.solve`.
 
-The highest-value remaining boundary cleanup is superposition.
+A matched three-sample CPU profiling sandwich on an Apple arm64 host, JAX/JAXlib 0.10.2, and x64
+used 6NT5 identity, 6NT5-to-6NT6 cross, and an alternating 16-pair batch:
+
+| Measurement | Legacy | Device-native | Change |
+| --- | ---: | ---: | ---: |
+| Warm identity | 89.80 ms | 88.79 ms | -1.1% |
+| Warm cross pair | 88.91 ms | 88.49 ms | -0.5% |
+| Warm batch | 27.52 ms/pair | 27.33 ms/pair | -0.7% |
+| Post-moment matching and solve | 2.19 ms | 0.47 ms | -78.6% |
+
+The new benchmark also reports structure-to-moment preparation, candidate generation, rotation,
+feature assembly, similarity selection, transform solve, and optional JAX traces. Numerical tests
+cover legacy feature ordering and transform parity in x64 and float32, identity, invalid masks, and
+batch-versus-single behavior.
 
 ## CPU/GPU Latency Comparison
 
@@ -507,9 +525,54 @@ default alternating 6NT5/6NT6 workload used JAX/jaxlib `0.11.0` on CUDA device `
 
 The Checkpoint 0 gate passes: accumulation plus transfer exceeds `0.5 ms/protein` and `10%`
 of host-prep plus transfer. This validates retaining size-bucketing, vectorized host voxelization,
-and device-scatter voxelization in the roadmap. These numbers use the homogeneous committed
-6NT5/6NT6 workload; the heterogeneous FoldBench manifest still needs to be run before using the
-result as the production padding/transfer estimate.
+and device-scatter voxelization in the roadmap.
+
+A heterogeneous CPU follow-up used 16 FoldBench structures: four each from protein-protein,
+antibody-antigen, protein-ligand, and protein-peptide, selected near the 10th, 40th, 70th, and
+95th voxel-volume percentiles within each category. The schema-v8 harness ran with max order 6,
+3 samples, and 2 repeats on the JAX CPU backend:
+
+| Batch-16 measurement | FoldBench CPU result |
+| --- | ---: |
+| Host preparation | 8.728 ms/protein |
+| Compiled device core | 1.223 ms/protein |
+| Prepared end-to-end, sequential | 7.306 ms/protein |
+| Prepared end-to-end, batched | 8.171 ms/protein |
+| Batched core speedup | 1.31x |
+| Native voxel bytes | 40.8 MB |
+| Padded voxel bytes | 118.5 MB |
+| Padding fraction | 65.5% |
+
+The core benefits from batching, but the input-order batch is 11.8% slower end to end because
+heterogeneous padding and host preparation dominate. This strengthens the case for the existing
+volume-sorted, voxel-budgeted heterogeneous runner rather than fixed input-order batches.
+
+The schema-v9 follow-up exercises that heterogeneous runner directly. It processes preparation
+windows bounded at four voxel budgets and uses exact-sized partial chunks. On the same 16 inputs,
+the default 16,777,216-cell budget produced two chunks (`12 x 104 x 88 x 136` and
+`4 x 112 x 128 x 144`):
+
+| Scheduler measurement | Input order | Budgeted |
+| --- | ---: | ---: |
+| Total padded cells | 29.62 M | 23.19 M |
+| Padding fraction | 65.5% | 56.0% |
+| Peak chunk bytes | 118.5 MB | 59.7 MB |
+| Warmed prepared voxels | 2.159 ms/protein | 2.053 ms/protein |
+
+That is 21.7% fewer padded cells, a 49.6% lower peak chunk allocation, and a 5.2% warmed
+throughput improvement. A fresh public call remains compilation-bound because the budgeted path
+compiles two spatial shapes instead of one (186.9 versus 106.3 ms/protein on this CPU run). Keep
+first-execution and warmed throughput separate in future comparisons; reducing the number of
+compiled shape signatures is the remaining scheduler-level opportunity.
+
+The FoldBench order-20 discrepancy was traced to a precision frontier that began after float32
+mass/center/radius preprocessing and ended before candidate generation and rotation. Zero padding
+changed reduction topology, and the small preprocessing difference was amplified by the
+ill-conditioned order-20 conversion and rotation stages. Production `auto` precision now retains
+float64/complex128 through normalization and downcasts only the completed descriptor. A committed
+CA-only 9J1R regression compares native `(86, 26, 62)` execution with `(106, 123, 142)` padding;
+the strict path has no values outside `rtol=2e-5, atol=5e-6` and preserves float32 public output.
+Collect fresh order-20 throughput numbers before replacing the earlier invalid characterization.
 
 ## Previous Batched Stage Profile
 
@@ -539,12 +602,13 @@ rotation execution, not voxelization.
 
 ## Recommended Next Work
 
-### 1. Use fixed candidates directly in superposition
+### 1. Profile fixed-slot superposition on GPU
 
-Superposition still calls the legacy all-orders wrapper, stacks NumPy groups, and transfers the
-valid pairs back into JAX rotation. Use the fixed grouped candidate API and compact once at the
-explicit transformation-selection boundary. Treat this as boundary cleanup unless profiling shows
-a material end-to-end benefit.
+Superposition now retains all 192 fixed candidate slots and masks the 96 invalid slots during
+selection. The CPU end-to-end result is neutral-to-positive, but the existing GPU evidence shows
+that invalid rotation slots can be costly. Run the focused superposition trace on the RTX 3090
+before considering a compact fixed representation; preserve candidate ordering and numerical
+parity as hard constraints.
 
 ### 2. Profile the remaining even candidate and rotation kernels
 

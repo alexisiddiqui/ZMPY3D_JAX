@@ -58,7 +58,7 @@ def _calculate_bbox_moment_2_zm_jax(
             "reduction_strategy must be 'auto', 'scatter', or 'segmented_scan'"
         )
     use_segmented_scan = reduction_strategy == "segmented_scan" or (
-        reduction_strategy == "auto" and _config.COMPLEX_DTYPE == jnp.complex64
+        reduction_strategy == "auto" and contributions.dtype == jnp.complex64
     )
     if use_segmented_scan:
         summed = segmented_sum_associative(

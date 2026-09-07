@@ -73,8 +73,14 @@ def _calculate_zm_by_ab_rotation_jax(
     reduction_strategy: str = "auto",
 ) -> chex.Array:
     """Vectorized rotation kernel with one output array per ``(a, b)`` pair."""
-    complex_dtype = _config.COMPLEX_DTYPE
-    float_dtype = _config.FLOAT_DTYPE
+    complex_dtype = jnp.result_type(
+        z_moment_raw.dtype,
+        ab_list.dtype,
+        binomial_cache.dtype,
+        clm_cache.dtype,
+        jnp.complex64,
+    )
+    float_dtype = jnp.real(jnp.zeros((), dtype=complex_dtype)).dtype
 
     z_moment_raw = jnp.asarray(z_moment_raw, dtype=complex_dtype)
     binomial_cache = jnp.asarray(binomial_cache, dtype=float_dtype)

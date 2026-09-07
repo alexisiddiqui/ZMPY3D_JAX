@@ -25,10 +25,12 @@ import os
 import pickle
 import sys
 
+import jax
 import jax.numpy as jnp
 import numpy as np
 
 import ZMPY3D_JAX as z
+from ZMPY3D_JAX.lib.batched_descriptor import calculate_descriptor_batch_from_voxels
 from ZMPY3D_JAX.lib.descriptor_assembly import compact_descriptor_for_host
 from ZMPY3D_JAX.lib.structure_voxel import voxelize_structure
 
@@ -169,6 +171,57 @@ def ZMPY3D_CLI_ZM(
         include_hydrogens=IncludeHydrogens,
     )
     Voxel3D = jnp.asarray(prepared[0][1], dtype=z.FLOAT_DTYPE)
+
+    # Order-20+ normalization is sensitive enough that changing only the padded
+    # voxel shape can change float32 reduction topology and amplify round-off.
+    # Use the same end-to-end internal x64 path as the batch API, then retain the
+    # configured public descriptor dtype.
+    if MaxOrder >= 20:
+        jax.config.update("jax_enable_x64", True)
+        x64_bbox_to_zm_cache = z.BBoxToZMCache(
+            max_order=MaxOrder,
+            g_coefficients=jnp.asarray(
+                GCache_complex, dtype=jnp.complex128
+            ).reshape(-1),
+            pqr_indices=jnp.asarray(
+                GCache_pqr_linear, dtype=jnp.int32
+            ).reshape(-1)
+            - 1,
+            output_indices=jnp.asarray(
+                GCache_complex_index, dtype=jnp.int32
+            ).reshape(-1)
+            - 1,
+            clm=jnp.asarray(CLMCache3D, dtype=jnp.complex128),
+        )
+        x64_rotation_cache = z.ZMRotationCache(
+            binomial=jnp.asarray(BinomialCache, dtype=jnp.float64),
+            max_order=MaxOrder,
+            clm=jnp.asarray(CLMCache, dtype=jnp.float64),
+            s_id=RotationCache.s_id,
+            n=RotationCache.n,
+            l=RotationCache.l,
+            m=RotationCache.m,
+            mu=RotationCache.mu,
+            k=RotationCache.k,
+            is_nlm_value=RotationCache.is_nlm_value,
+        )
+        descriptors = calculate_descriptor_batch_from_voxels(
+            Voxel3D[jnp.newaxis, ...],
+            max_order=MaxOrder,
+            max_target_order=MaxTargetOrder2NormRotate,
+            mode=Mode,
+            default_radius_multiplier=Param["default_radius_multiplier"],
+            bbox_to_zm_cache=BBoxToZMCache,
+            x64_bbox_to_zm_cache=x64_bbox_to_zm_cache,
+            rotation_cache=RotationCache,
+            x64_rotation_cache=x64_rotation_cache,
+            descriptor_cache=DescriptorCache,
+        )
+        return z.DescriptorVector(
+            values=descriptors.values[0],
+            is_valid=descriptors.is_valid[0],
+        )
+
     Dimension_BBox_scaled = Voxel3D.shape
 
     XYZ_SampleStruct = {

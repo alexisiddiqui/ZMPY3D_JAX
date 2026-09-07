@@ -22,267 +22,62 @@
 
 import argparse
 import os
-import pickle
 import sys
-from typing import Sequence, Tuple
 
 import numpy as np
 
-import ZMPY3D_JAX as z
+from .lib.superposition import (
+    calculate_pdb_superposition,
+    prepare_superposition_runtime,
+)
 
 
 def ZMPY3D_CLI_SuperA2B(PDBFileNameA: str, PDBFileNameB: str) -> np.ndarray:
+    """Return the 4x4 matrix that transforms legacy-PDB CA trace A onto B.
+
+    Candidate generation, moment rotation, feature matching, and the final linear
+    solve remain in JAX. The completed matrix crosses to NumPy at this public API
+    boundary for compatibility with the original interface.
     """
-    Generate a transformation matrix to superimpose structure A onto structure B.
-
-    This function calculates the optimal 4x4 transformation matrix (rotation + translation)
-    to align structure A with structure B based on their 3D Zernike moment descriptors.
-    The alignment is performed by comparing all possible rotations of the Zernike moments
-    and selecting the transformation that maximizes their similarity.
-
-    Parameters
-    ----------
-    PDBFileNameA : str
-        Path to the first PDB file (structure A) in old PDB text format.
-        Must end with .pdb or .txt.
-    PDBFileNameB : str
-        Path to the second PDB file (structure B) in old PDB text format.
-        Must end with .pdb or .txt.
-
-    Returns
-    -------
-    numpy.ndarray
-        4x4 transformation matrix to apply to structure A's coordinates to align it with
-        structure B. The matrix combines rotation and translation operations.
-
-    Notes
-    -----
-    - The function uses MaxOrder=6 for Zernike moment calculations.
-    - Grid width is fixed at 1.0 Angstroms.
-    - All possible rotations up to order 6 are evaluated (96 rotation pairs total).
-    - The transformation is computed by solving: TargetRotM = inv(RotM_B) @ RotM_A
-    - The resulting matrix should be applied to structure A's atomic coordinates.
-
-    Examples
-    --------
-    >>> matrix = ZMPY3D_CLI_SuperA2B('protein_A.pdb', 'protein_B.pdb')
-    >>> # Apply matrix to structure A coordinates to align with B
-    """
-
-    def ZMCal(
-        PDBFileName: str,
-        GridWidth: float,
-        BinomialCache: object,
-        CLMCache: object,
-        CLMCache3D: object,
-        GCache_complex: object,
-        GCache_complex_index: object,
-        GCache_pqr_linear: object,
-        MaxOrder: int,
-        Param: dict,
-        ResidueBox: dict,
-        RotationIndex: dict,
-    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, Sequence[str]]:
-        [XYZ, AA_NameList] = z.get_pdb_xyz_ca(PDBFileName)
-
-        [Voxel3D, Corner] = z.fill_voxel_by_weight_density(
-            XYZ, AA_NameList, Param["residue_weight_map"], GridWidth, ResidueBox[GridWidth]
-        )
-        Dimension_BBox_scaled = Voxel3D.shape
-
-        XYZ_SampleStruct = {
-            "X_sample": np.arange(Dimension_BBox_scaled[0] + 1),
-            "Y_sample": np.arange(Dimension_BBox_scaled[1] + 1),
-            "Z_sample": np.arange(Dimension_BBox_scaled[2] + 1),
-        }
-
-        [VolumeMass, Center, _] = z.calculate_bbox_moment(Voxel3D, 1, XYZ_SampleStruct)
-        [
-            AverageVoxelDist2Center,
-            MaxVoxelDist2Center,
-            SphereXYZ_SampleStruct,
-        ] = z.calculate_molecular_radius_and_bbox_samples(
-            Voxel3D, Center, VolumeMass, Param["default_radius_multiplier"]
-        )
-
-        Center_scaled = Center * GridWidth + Corner
-
-        ##################################################################################
-        # You may add any preprocessing on the voxel before applying the Zernike moment. #
-        ##################################################################################
-
-        _, _, SphereBBoxMoment = z.calculate_bbox_moment(Voxel3D, MaxOrder, SphereXYZ_SampleStruct)
-
-        [ZMoment_scaled, ZMoment_raw] = z.calculate_bbox_moment_2_zm_cached(
-            SphereBBoxMoment, BBoxToZMCache
-        )
-
-        ABList_2 = z.calculate_ab_rotation_all(ZMoment_raw, 2)
-        ABList_3 = z.calculate_ab_rotation_all(ZMoment_raw, 3)
-        ABList_4 = z.calculate_ab_rotation_all(ZMoment_raw, 4)
-        ABList_5 = z.calculate_ab_rotation_all(ZMoment_raw, 5)
-        ABList_6 = z.calculate_ab_rotation_all(ZMoment_raw, 6)
-
-        ABList_all = np.vstack(ABList_2 + ABList_3 + ABList_4 + ABList_5 + ABList_6)
-
-        ZMList_all = z.calculate_zm_by_ab_rotation_batch(
-            ZMoment_raw, ABList_all, RotationCache
-        )
-        ZMList_all = np.transpose(np.asarray(ZMList_all), (3, 2, 1, 0))
-        ZMList_all = ZMList_all[~np.isnan(ZMList_all)]
-        # Based on ABList_all, it is known in advance that Order 6 will definitely have 96 pairs of AB, which means 96 vectors.
-        ZMList_all = np.reshape(ZMList_all, (np.int64(ZMList_all.size / 96), 96))
-
-        return XYZ, Center_scaled, ABList_all, ZMList_all, AA_NameList
-
-    Param = z.get_global_parameter()
-
-    MaxOrder = 6
-
-    BinomialCacheFilePath = os.path.join(
-        os.path.join(os.path.dirname(os.path.abspath(__file__)), "cache_data"), "BinomialCache.pkl"
-    )
-    with open(
-        BinomialCacheFilePath, "rb"
-    ) as file:  # Used at the entry point, it requires __file__ to identify the package location
-        # with open('./cache_data/BinomialCache.pkl', 'rb') as file: # Can be used in ipynb, but not at the entry point.
-        BinomialCachePKL = pickle.load(file)
-
-    LogCacheFilePath = os.path.join(
-        os.path.join(os.path.dirname(os.path.abspath(__file__)), "cache_data"),
-        "LogG_CLMCache_MaxOrder{:02d}.pkl".format(MaxOrder),
-    )
-    with open(
-        LogCacheFilePath, "rb"
-    ) as file:  # Used at the entry point, it requires __file__ to identify the package location
-        # with open('./cache_data/LogG_CLMCache_MaxOrder{:02d}.pkl'.format(MaxOrder), 'rb') as file: # Can be used in ipynb, but not at the entry point.
-        CachePKL = pickle.load(file)
-
-    # Extract all cached variables from pickle. These will be converted into a tensor/cupy objects for ZMPY3D_CP and ZMPY3D_TF.
-    BinomialCache = BinomialCachePKL["BinomialCache"]
-
-    # GCache, CLMCache, and all RotationIndex
-    GCache_pqr_linear = CachePKL["GCache_pqr_linear"]
-    GCache_complex = CachePKL["GCache_complex"]
-    GCache_complex_index = CachePKL["GCache_complex_index"]
-    CLMCache3D = CachePKL["CLMCache3D"]
-    CLMCache = CachePKL["CLMCache"]
-    RotationIndex = CachePKL["RotationIndex"]
-
-    # RotationIndex is a structure, must be [0,0] to accurately obtain the s_id ... etc, within RotationIndex.
-    s_id = np.squeeze(RotationIndex["s_id"][0, 0]) - 1
-    n = np.squeeze(RotationIndex["n"][0, 0])
-    l = np.squeeze(RotationIndex["l"][0, 0])
-    m = np.squeeze(RotationIndex["m"][0, 0])
-    mu = np.squeeze(RotationIndex["mu"][0, 0])
-    k = np.squeeze(RotationIndex["k"][0, 0])
-    IsNLM_Value = np.squeeze(RotationIndex["IsNLM_Value"][0, 0]) - 1
-    RotationCache = z.prepare_zm_rotation_cache(
-        BinomialCache, MaxOrder, CLMCache, s_id, n, l, m, mu, k, IsNLM_Value
-    )
-    BBoxToZMCache = z.prepare_bbox_to_zm_cache(
-        MaxOrder, GCache_complex, GCache_pqr_linear, GCache_complex_index, CLMCache3D
-    )
-
-    MaxN = MaxOrder + 1
-
-    ResidueBox = z.get_residue_gaussian_density_cache(Param)
-
-    GridWidth = 1.00
-
-    XYZ_A, Center_scaled_A, ABList_A, ZMList_A, AA_NameList_A = ZMCal(
-        PDBFileNameA,
-        1.00,
-        BinomialCache,
-        CLMCache,
-        CLMCache3D,
-        GCache_complex,
-        GCache_complex_index,
-        GCache_pqr_linear,
-        MaxOrder,
-        Param,
-        ResidueBox,
-        RotationIndex,
-    )
-    XYZ_B, Center_scaled_B, ABList_B, ZMList_B, AA_NameList_B = ZMCal(
-        PDBFileNameB,
-        1.00,
-        BinomialCache,
-        CLMCache,
-        CLMCache3D,
-        GCache_complex,
-        GCache_complex_index,
-        GCache_pqr_linear,
-        MaxOrder,
-        Param,
-        ResidueBox,
-        RotationIndex,
-    )
-
-    M = np.abs(ZMList_A.conj().T @ ZMList_B)  # square matrix A^T*B
-    MaxValueIndex = np.where(M == np.max(M))  # MaxValueIndex is a tuple that contains an nd array.
-
-    i, j = MaxValueIndex[0][0], MaxValueIndex[1][0]
-
-    RotM_A = z.get_transform_matrix_from_ab_list(ABList_A[i, 0], ABList_A[i, 1], Center_scaled_A)
-    RotM_B = z.get_transform_matrix_from_ab_list(ABList_B[j, 0], ABList_B[j, 1], Center_scaled_B)
-    TargetRotM = np.linalg.solve(RotM_B, RotM_A)
-
-    return TargetRotM
+    runtime = prepare_superposition_runtime()
+    match = calculate_pdb_superposition(PDBFileNameA, PDBFileNameB, runtime)
+    matrix = np.asarray(match.matrix)
+    if not bool(np.asarray(match.is_valid)):
+        raise ValueError("no valid rotation candidates were generated")
+    if not np.all(np.isfinite(matrix)):
+        raise np.linalg.LinAlgError("superposition transform is not finite")
+    return matrix
 
 
 def main() -> None:
-    """
-    Main function to execute the ZMPY3D_CLI_SuperA2B script.
-
-    This function parses command-line arguments, validates input files, and calls the
-    ZMPY3D_CLI_SuperA2B function to compute the transformation matrix for structure
-    superimposition. The resulting matrix is printed to the console.
-
-    Command-line arguments:
-    - Two input files in .pdb or .txt format representing the structures to be aligned.
-
-    Output:
-    - Prints the 4x4 transformation matrix to the console.
-
-    Example usage:
-    >>> python ZMPY3D_CLI_SuperA2B.py structureA.pdb structureB.pdb
-    """
+    """Parse two legacy PDB paths and print the A-to-B transformation matrix."""
     if len(sys.argv) != 3:
         print("Usage: ZMPY3D_CLI_SuperA2B PDB_A PDB_B")
         print(
-            "    This function generates a transformation matrix to superimpose structure A onto B, i.e., the matrix is for A’s coordinates."
+            "    This function generates a transformation matrix to superimpose "
+            "structure A onto B, i.e., the matrix is for A’s coordinates."
         )
         print("Error: You must provide exactly two input files.")
         sys.exit(1)
 
     parser = argparse.ArgumentParser(description="Process two .pdb or .txt files.")
     parser.add_argument(
-        "input_file1",
-        type=str,
-        help="The first input file to process (must end with .pdb or .txt) with old PDB text format",
+        "input_file1", type=str, help="The first input file in old PDB text format"
     )
     parser.add_argument(
-        "input_file2",
-        type=str,
-        help="The second input file to process (must end with .pdb or .txt) with old PDB text format",
+        "input_file2", type=str, help="The second input file in old PDB text format"
     )
-
     args = parser.parse_args()
 
-    # Perform validation checks directly after parsing arguments
-    input_files = [args.input_file1, args.input_file2]
-    for input_file in input_files:
+    for input_file in (args.input_file1, args.input_file2):
         if not (input_file.endswith(".pdb") or input_file.endswith(".txt")):
             parser.error("File must end with .pdb or .txt")
-
         if not os.path.isfile(input_file):
             parser.error("File does not exist")
 
-    TargetRotM = ZMPY3D_CLI_SuperA2B(args.input_file1, args.input_file2)
-
+    target_rot_m = ZMPY3D_CLI_SuperA2B(args.input_file1, args.input_file2)
     print("the matrix is for A’s coordinates.")
-    print(TargetRotM)
+    print(target_rot_m)
 
 
 if __name__ == "__main__":

@@ -71,9 +71,10 @@ def _calculate_bbox_moment_batch(
 
 def _bbox_edges(voxels: chex.Array) -> tuple[chex.Array, chex.Array, chex.Array]:
     batch_size = voxels.shape[0]
+    float_dtype = voxels.dtype
     return tuple(
         jnp.broadcast_to(
-            jnp.arange(voxels.shape[axis] + 1, dtype=_config.FLOAT_DTYPE),
+            jnp.arange(voxels.shape[axis] + 1, dtype=float_dtype),
             (batch_size, voxels.shape[axis] + 1),
         )
         for axis in range(1, 4)
@@ -92,19 +93,20 @@ def _calculate_radius_and_samples_batch(
     masses: chex.Array,
     default_radius_multiplier: float,
 ):
+    float_dtype = jnp.result_type(voxels.dtype, centers.dtype, masses.dtype)
     has_weight, average_radius, max_radius = jax.vmap(
         _radius_statistics_impl, in_axes=(0, 0, 0, None)
     )(voxels, centers, masses, default_radius_multiplier)
     x_samples = (
-        jnp.arange(voxels.shape[1] + 1, dtype=_config.FLOAT_DTYPE)[None, :]
+        jnp.arange(voxels.shape[1] + 1, dtype=float_dtype)[None, :]
         - centers[:, 0, None]
     ) / average_radius[:, None]
     y_samples = (
-        jnp.arange(voxels.shape[2] + 1, dtype=_config.FLOAT_DTYPE)[None, :]
+        jnp.arange(voxels.shape[2] + 1, dtype=float_dtype)[None, :]
         - centers[:, 1, None]
     ) / average_radius[:, None]
     z_samples = (
-        jnp.arange(voxels.shape[3] + 1, dtype=_config.FLOAT_DTYPE)[None, :]
+        jnp.arange(voxels.shape[3] + 1, dtype=float_dtype)[None, :]
         - centers[:, 2, None]
     ) / average_radius[:, None]
     return has_weight, average_radius, max_radius, x_samples, y_samples, z_samples
@@ -133,7 +135,10 @@ def _calculate_bbox_to_zm_batch(
     clm: chex.Array,
     reduction_strategy: str = "auto",
 ):
-    complex_moments = jnp.asarray(bbox_moments, dtype=_config.COMPLEX_DTYPE)
+    complex_dtype = jnp.result_type(
+        bbox_moments.dtype, g_coefficients.dtype, clm.dtype, jnp.complex64
+    )
+    complex_moments = jnp.asarray(bbox_moments, dtype=complex_dtype)
     return jax.vmap(
         lambda bbox_moment: _calculate_bbox_moment_2_zm_jax(
             max_order,
@@ -191,7 +196,9 @@ def _calculate_3dzd_batch(scaled_moments: chex.Array) -> chex.Array:
 
 @partial(jax.jit, static_argnums=(1,))
 def _calculate_ab_candidates_batch(raw_moments: chex.Array, target_order: int):
-    return jax.vmap(lambda raw: calculate_ab_rotation_candidates(raw, target_order))(
+    return jax.vmap(
+        lambda raw: calculate_ab_rotation_candidates(raw, target_order, "input")
+    )(
         raw_moments
     )
 
@@ -204,7 +211,7 @@ def _calculate_ab_compact_candidates_batch(
 ):
     return jax.vmap(
         lambda raw: calculate_ab_rotation_compact_candidates(
-            raw, target_order, root_strategy
+            raw, target_order, root_strategy, "input"
         )
     )(raw_moments)
 
@@ -217,7 +224,7 @@ def _calculate_ab_compact_candidate_group_batch(
 ):
     return jax.vmap(
         lambda raw: calculate_ab_rotation_compact_candidate_group(
-            raw, target_orders, root_strategy
+            raw, target_orders, root_strategy, "input"
         )
     )(raw_moments)
 
@@ -555,14 +562,28 @@ def _assemble_descriptor_batch(
     return DescriptorVector(values=values, is_valid=~jnp.isnan(values))
 
 
+def _resolve_moment_precision(max_order: int, moment_precision: str) -> str:
+    if moment_precision not in ("auto", "configured", "mixed", "strict"):
+        raise ValueError(
+            "moment_precision must be 'auto', 'configured', 'mixed', or 'strict'"
+        )
+    if moment_precision == "auto":
+        return "strict" if max_order >= 20 else "configured"
+    return moment_precision
+
+
 def _uses_mixed_moments(max_order: int, moment_precision: str) -> bool:
-    if moment_precision not in ("auto", "configured", "mixed"):
-        raise ValueError("moment_precision must be 'auto', 'configured', or 'mixed'")
-    if moment_precision == "configured":
-        return False
-    if moment_precision == "mixed":
-        return True
-    return _config.FLOAT_DTYPE == jnp.float32 and max_order >= 20
+    """Retain the legacy predicate for benchmark and compatibility callers."""
+    return _resolve_moment_precision(max_order, moment_precision) == "mixed"
+
+
+def _cast_descriptor_values(
+    descriptor: DescriptorVector, dtype: jnp.dtype
+) -> DescriptorVector:
+    return DescriptorVector(
+        values=jnp.asarray(descriptor.values, dtype=dtype),
+        is_valid=descriptor.is_valid,
+    )
 
 
 def calculate_descriptor_batch_from_voxels(
@@ -575,6 +596,7 @@ def calculate_descriptor_batch_from_voxels(
     bbox_to_zm_cache: BBoxToZMCache,
     x64_bbox_to_zm_cache: BBoxToZMCache | None = None,
     rotation_cache: ZMRotationCache,
+    x64_rotation_cache: ZMRotationCache | None = None,
     descriptor_cache: DescriptorAssemblyCache,
     normalization_representation: str = "companion_compact_grouped",
     rotation_reduction: str = "auto",
@@ -603,20 +625,47 @@ def calculate_descriptor_batch_from_voxels(
         raise ValueError("unknown rotation reduction")
     if moment_reduction not in ("auto", "scatter", "segmented_scan"):
         raise ValueError("unknown moment reduction")
-    use_mixed_moments = _uses_mixed_moments(max_order, moment_precision)
-    if use_mixed_moments:
+    resolved_precision = _resolve_moment_precision(max_order, moment_precision)
+    use_mixed_moments = resolved_precision == "mixed"
+    use_strict_precision = resolved_precision == "strict"
+    if use_mixed_moments or use_strict_precision:
         if x64_bbox_to_zm_cache is None:
-            raise ValueError("mixed moments require x64_bbox_to_zm_cache")
+            raise ValueError(
+                f"{resolved_precision} precision requires x64_bbox_to_zm_cache"
+            )
         if x64_bbox_to_zm_cache.max_order != max_order:
             raise ValueError("x64 bbox-to-ZM cache maximum order does not match max_order")
+    if use_strict_precision:
+        if x64_rotation_cache is None:
+            raise ValueError("strict precision requires x64_rotation_cache")
+        if x64_rotation_cache.max_order != max_order:
+            raise ValueError("x64 rotation cache maximum order does not match max_order")
 
-    voxel_batch = jnp.asarray(voxels, dtype=_config.FLOAT_DTYPE)
+    voxel_dtype = jnp.float64 if use_strict_precision else _config.FLOAT_DTYPE
+    voxel_batch = jnp.asarray(voxels, dtype=voxel_dtype)
     if voxel_batch.ndim != 4 or voxel_batch.shape[0] == 0:
         raise ValueError(
             "voxels must have shape (batch, x, y, z) with a non-empty batch"
         )
 
-    if use_mixed_moments:
+    if use_strict_precision:
+        masses, centers, _ = _calculate_bbox_order1_batch(voxel_batch)
+        radius = _calculate_radius_and_samples_batch(
+            voxel_batch, centers, masses, default_radius_multiplier
+        )
+        _, _, bbox_moments = _calculate_bbox_max_order_batch(
+            voxel_batch, max_order, radius[3], radius[4], radius[5]
+        )
+        scaled, raw = _calculate_bbox_to_zm_batch(
+            bbox_moments,
+            max_order,
+            x64_bbox_to_zm_cache.g_coefficients,
+            x64_bbox_to_zm_cache.pqr_indices,
+            x64_bbox_to_zm_cache.output_indices,
+            x64_bbox_to_zm_cache.clm,
+            "segmented_scan",
+        )
+    elif use_mixed_moments:
         from .mixed_precision_prototype import (
             calculate_bbox_moments_mixed_prototype,
             calculate_zm_mixed_prototype,
@@ -658,13 +707,19 @@ def calculate_descriptor_batch_from_voxels(
         )
     descriptors = _calculate_3dzd_batch(scaled) if mode in (1, 2) else None
 
+    active_rotation_cache = (
+        x64_rotation_cache if use_strict_precision else rotation_cache
+    )
+    active_rotation_reduction = (
+        "segmented_scan" if use_strict_precision else rotation_reduction
+    )
     if mode in (0, 2):
         means = _calculate_normalization_means(
             raw,
             tuple(range(2, max_target_order + 1)),
             normalization_representation,
-            rotation_cache,
-            rotation_reduction,
+            active_rotation_cache,
+            active_rotation_reduction,
         )
     else:
         max_n = max_order + 1
@@ -674,13 +729,15 @@ def calculate_descriptor_batch_from_voxels(
         )
 
     if descriptors is None:
-        return _assemble_mean_batch(means, descriptor_cache.moment_indices)
-    return _assemble_descriptor_batch(
-        descriptors,
-        means,
-        descriptor_cache.descriptor_indices,
-        descriptor_cache.moment_indices,
-    )
+        result = _assemble_mean_batch(means, descriptor_cache.moment_indices)
+    else:
+        result = _assemble_descriptor_batch(
+            descriptors,
+            means,
+            descriptor_cache.descriptor_indices,
+            descriptor_cache.moment_indices,
+        )
+    return _cast_descriptor_values(result, _config.FLOAT_DTYPE)
 
 
 def calculate_descriptor_batch_staged(
@@ -693,6 +750,7 @@ def calculate_descriptor_batch_staged(
     bbox_to_zm_cache: BBoxToZMCache,
     x64_bbox_to_zm_cache: BBoxToZMCache | None = None,
     rotation_cache: ZMRotationCache,
+    x64_rotation_cache: ZMRotationCache | None = None,
     descriptor_cache: DescriptorAssemblyCache,
     stage_executor: StageExecutor | None = None,
     normalization_representation: str = "companion_compact",
@@ -720,14 +778,24 @@ def calculate_descriptor_batch_staged(
             "staged normalization representation must be 'full_fixed' or "
             "'analytic_compact', or 'companion_compact'"
         )
-    use_mixed_moments = _uses_mixed_moments(max_order, moment_precision)
-    if use_mixed_moments:
+    resolved_precision = _resolve_moment_precision(max_order, moment_precision)
+    use_mixed_moments = resolved_precision == "mixed"
+    use_strict_precision = resolved_precision == "strict"
+    if use_mixed_moments or use_strict_precision:
         if x64_bbox_to_zm_cache is None:
-            raise ValueError("mixed moments require x64_bbox_to_zm_cache")
+            raise ValueError(
+                f"{resolved_precision} precision requires x64_bbox_to_zm_cache"
+            )
         if x64_bbox_to_zm_cache.max_order != max_order:
             raise ValueError("x64 bbox-to-ZM cache maximum order does not match max_order")
+    if use_strict_precision:
+        if x64_rotation_cache is None:
+            raise ValueError("strict precision requires x64_rotation_cache")
+        if x64_rotation_cache.max_order != max_order:
+            raise ValueError("x64 rotation cache maximum order does not match max_order")
 
-    voxel_batch = jnp.asarray(voxels, dtype=_config.FLOAT_DTYPE)
+    voxel_dtype = jnp.float64 if use_strict_precision else _config.FLOAT_DTYPE
+    voxel_batch = jnp.asarray(voxels, dtype=voxel_dtype)
     if voxel_batch.ndim != 4 or voxel_batch.shape[0] == 0:
         raise ValueError(
             "voxels must have shape (batch, x, y, z) with a non-empty batch"
@@ -750,7 +818,26 @@ def calculate_descriptor_batch_staged(
             voxel_batch, centers, masses, default_radius_multiplier
         ),
     )
-    if use_mixed_moments:
+    if use_strict_precision:
+        _, _, bbox_moments = execute(
+            "bbox_max_order",
+            lambda: _calculate_bbox_max_order_batch(
+                voxel_batch, max_order, x_samples, y_samples, z_samples
+            ),
+        )
+        scaled, raw = execute(
+            "bbox_to_zm",
+            lambda: _calculate_bbox_to_zm_batch(
+                bbox_moments,
+                max_order,
+                x64_bbox_to_zm_cache.g_coefficients,
+                x64_bbox_to_zm_cache.pqr_indices,
+                x64_bbox_to_zm_cache.output_indices,
+                x64_bbox_to_zm_cache.clm,
+                "segmented_scan",
+            ),
+        )
+    elif use_mixed_moments:
         from .mixed_precision_prototype import (
             calculate_bbox_moments_mixed_prototype,
             calculate_zm_mixed_prototype,
@@ -806,6 +893,12 @@ def calculate_descriptor_batch_staged(
         if mode in (1, 2)
         else None
     )
+    active_rotation_cache = (
+        x64_rotation_cache if use_strict_precision else rotation_cache
+    )
+    active_rotation_reduction = (
+        "segmented_scan" if use_strict_precision else rotation_reduction
+    )
     candidates_by_order: dict[int, Any] = {}
     means_by_order = []
     if mode in (0, 2):
@@ -825,16 +918,16 @@ def calculate_descriptor_batch_staged(
                     raw,
                     candidates.pairs,
                     max_order,
-                    rotation_cache.binomial,
-                    rotation_cache.clm,
-                    rotation_cache.s_id,
-                    rotation_cache.n,
-                    rotation_cache.l,
-                    rotation_cache.m,
-                    rotation_cache.mu,
-                    rotation_cache.k,
-                    rotation_cache.is_nlm_value,
-                    rotation_reduction,
+                    active_rotation_cache.binomial,
+                    active_rotation_cache.clm,
+                    active_rotation_cache.s_id,
+                    active_rotation_cache.n,
+                    active_rotation_cache.l,
+                    active_rotation_cache.m,
+                    active_rotation_cache.mu,
+                    active_rotation_cache.k,
+                    active_rotation_cache.is_nlm_value,
+                    active_rotation_reduction,
                 ),
             )
             means_by_order.append(
@@ -866,4 +959,5 @@ def calculate_descriptor_batch_staged(
         )
 
     result = execute("descriptor_assembly", assemble)
+    result = _cast_descriptor_values(result, _config.FLOAT_DTYPE)
     return result, candidates_by_order

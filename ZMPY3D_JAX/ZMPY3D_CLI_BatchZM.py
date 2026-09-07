@@ -44,12 +44,16 @@ from ZMPY3D_JAX.lib.fill_voxel_by_weight_density04 import (
 from ZMPY3D_JAX.lib.structure_voxel import voxelize_structure
 
 
+_PREPARATION_WINDOW_BUDGET_MULTIPLIER = 4
+
+
 class _BatchZMRuntime(NamedTuple):
     param: dict[str, Any]
     residue_box: dict[float, Any]
     rotation_cache: z.ZMRotationCache
     bbox_to_zm_cache: z.BBoxToZMCache
     x64_bbox_to_zm_cache: z.BBoxToZMCache | None
+    x64_rotation_cache: z.ZMRotationCache | None
     descriptor_cache: z.DescriptorAssemblyCache
 
 
@@ -106,7 +110,8 @@ def _prepare_batch_runtime(grid_width: float, max_order: int) -> _BatchZMRuntime
         cache["CLMCache3D"],
     )
     x64_bbox_to_zm_cache = None
-    if z.FLOAT_DTYPE == jnp.float32 and max_order >= 20:
+    x64_rotation_cache = None
+    if max_order >= 20:
         jax.config.update("jax_enable_x64", True)
         x64_bbox_to_zm_cache = z.BBoxToZMCache(
             max_order=max_order,
@@ -123,12 +128,25 @@ def _prepare_batch_runtime(grid_width: float, max_order: int) -> _BatchZMRuntime
             - 1,
             clm=jnp.asarray(cache["CLMCache3D"], dtype=jnp.complex128),
         )
+        x64_rotation_cache = z.ZMRotationCache(
+            binomial=jnp.asarray(binomial_cache, dtype=jnp.float64),
+            max_order=max_order,
+            clm=jnp.asarray(cache["CLMCache"], dtype=jnp.float64),
+            s_id=rotation_cache.s_id,
+            n=rotation_cache.n,
+            l=rotation_cache.l,
+            m=rotation_cache.m,
+            mu=rotation_cache.mu,
+            k=rotation_cache.k,
+            is_nlm_value=rotation_cache.is_nlm_value,
+        )
     return _BatchZMRuntime(
         param=param,
         residue_box=z.get_residue_gaussian_density_cache(param),
         rotation_cache=rotation_cache,
         bbox_to_zm_cache=bbox_to_zm_cache,
         x64_bbox_to_zm_cache=x64_bbox_to_zm_cache,
+        x64_rotation_cache=x64_rotation_cache,
         descriptor_cache=z.prepare_descriptor_assembly_cache(max_order),
     )
 
@@ -148,25 +166,58 @@ def _round_shape(shape: Sequence[int], multiple: int = 8) -> tuple[int, int, int
 
 
 def _chunk_by_voxel_budget(items, batch_size: int, voxel_budget: int):
-    """Sort by volume and greedily form shape-rounded device chunks."""
-    ordered = sorted(items, key=lambda item: int(np.prod(item[2].shape)))
+    """Pack similar shapes together while respecting device batch limits."""
+    ordered = sorted(
+        items,
+        key=lambda item: (-int(np.prod(item[2].shape)), int(item[0])),
+    )
     chunks = []
-    current = []
-    padded_shape = (0, 0, 0)
     for item in ordered:
-        candidate_shape = _round_shape(
-            tuple(max(padded_shape[axis], item[2].shape[axis]) for axis in range(3))
-        )
-        candidate_cost = (len(current) + 1) * int(np.prod(candidate_shape))
-        if current and (len(current) == batch_size or candidate_cost > voxel_budget):
-            chunks.append((current, padded_shape))
-            current = []
-            candidate_shape = _round_shape(item[2].shape)
-        current.append(item)
-        padded_shape = candidate_shape
-    if current:
-        chunks.append((current, padded_shape))
+        best = None
+        for index, (chunk, padded_shape) in enumerate(chunks):
+            if len(chunk) >= batch_size:
+                continue
+            candidate_shape = _round_shape(
+                tuple(
+                    max(padded_shape[axis], item[2].shape[axis])
+                    for axis in range(3)
+                )
+            )
+            candidate_cost = (len(chunk) + 1) * int(np.prod(candidate_shape))
+            if candidate_cost > voxel_budget:
+                continue
+            current_cost = len(chunk) * int(np.prod(padded_shape))
+            score = (candidate_cost - current_cost, candidate_cost, index)
+            if best is None or score < best[0]:
+                best = (score, index, candidate_shape)
+
+        if best is None:
+            chunks.append(([item], _round_shape(item[2].shape)))
+        else:
+            _, index, candidate_shape = best
+            chunks[index][0].append(item)
+            chunks[index] = (chunks[index][0], candidate_shape)
     return chunks
+
+
+def _run_voxel_window(items, batch_size: int, voxel_budget: int, descriptor_runner):
+    """Describe one bounded collection of already voxelized structures."""
+    rows = []
+    for chunk, padded_shape in _chunk_by_voxel_budget(
+        items, batch_size, voxel_budget
+    ):
+        padded = np.zeros((len(chunk), *padded_shape), dtype=z.FLOAT_DTYPE)
+        for index, (_, _, voxel) in enumerate(chunk):
+            padded[index, : voxel.shape[0], : voxel.shape[1], : voxel.shape[2]] = (
+                voxel
+            )
+        result = descriptor_runner(jnp.asarray(padded, dtype=z.FLOAT_DTYPE))
+        jax.block_until_ready(result)
+        rows.extend(
+            (ordinal, sample_id, result.values[index], result.is_valid[index])
+            for index, (ordinal, sample_id, _) in enumerate(chunk)
+        )
+    return rows
 
 
 def _prepare_descriptor_runner(
@@ -186,6 +237,7 @@ def _prepare_descriptor_runner(
             default_radius_multiplier=runtime.param["default_radius_multiplier"],
             bbox_to_zm_cache=runtime.bbox_to_zm_cache,
             x64_bbox_to_zm_cache=runtime.x64_bbox_to_zm_cache,
+            x64_rotation_cache=runtime.x64_rotation_cache,
             rotation_cache=runtime.rotation_cache,
             descriptor_cache=runtime.descriptor_cache,
         )
@@ -377,9 +429,28 @@ def calculate_structure_descriptors_batch(
         weight_map = z.get_atomic_mass_map()
         density_boxes = z.get_atomic_gaussian_density_cache(grid_width)
 
-    prepared = []
     failures = []
+    prepared = []
+    prepared_cells = 0
+    preparation_budget = _PREPARATION_WINDOW_BUDGET_MULTIPLIER * voxel_budget
+    rows = []
     ordinal = 0
+
+    runner = _prepare_descriptor_runner(
+        max_order=max_order,
+        max_target_order=max_target_order,
+        mode=mode,
+        runtime=runtime,
+    )
+
+    def flush_prepared() -> None:
+        nonlocal prepared, prepared_cells
+        if not prepared:
+            return
+        rows.extend(_run_voxel_window(prepared, batch_size, voxel_budget, runner))
+        prepared = []
+        prepared_cells = 0
+
     for path in paths:
         try:
             voxels = voxelize_structure(
@@ -401,36 +472,24 @@ def calculate_structure_descriptors_batch(
             failures.append(StructureFailure(str(Path(path)), str(error)))
             continue
         for sample_id, voxel in voxels:
+            voxel_cells = int(voxel.size)
+            if prepared and prepared_cells + voxel_cells > preparation_budget:
+                flush_prepared()
             prepared.append((ordinal, sample_id, voxel))
+            prepared_cells += voxel_cells
             ordinal += 1
+            if prepared_cells >= preparation_budget:
+                flush_prepared()
+
+    flush_prepared()
 
     width = _descriptor_width(mode, max_target_order, runtime.descriptor_cache)
-    if not prepared:
+    if not rows:
         empty = z.DescriptorVector(
             values=jnp.empty((0, width), dtype=z.FLOAT_DTYPE),
             is_valid=jnp.empty((0, width), dtype=bool),
         )
         return StructureDescriptorBatch((), representation, empty, tuple(failures))
-
-    runner = _prepare_descriptor_runner(
-        max_order=max_order,
-        max_target_order=max_target_order,
-        mode=mode,
-        runtime=runtime,
-    )
-    rows = []
-    for chunk, padded_shape in _chunk_by_voxel_budget(prepared, batch_size, voxel_budget):
-        volume = int(np.prod(padded_shape))
-        capacity = max(len(chunk), min(batch_size, max(1, voxel_budget // volume)))
-        padded = np.zeros((capacity, *padded_shape), dtype=z.FLOAT_DTYPE)
-        for index, (_, _, voxel) in enumerate(chunk):
-            padded[index, : voxel.shape[0], : voxel.shape[1], : voxel.shape[2]] = voxel
-        padded[len(chunk) :] = padded[len(chunk) - 1]
-        result = runner(jnp.asarray(padded, dtype=z.FLOAT_DTYPE))
-        for index, (item_ordinal, sample_id, _) in enumerate(chunk):
-            rows.append(
-                (item_ordinal, sample_id, result.values[index], result.is_valid[index])
-            )
 
     rows.sort(key=lambda row: row[0])
     descriptors = z.DescriptorVector(

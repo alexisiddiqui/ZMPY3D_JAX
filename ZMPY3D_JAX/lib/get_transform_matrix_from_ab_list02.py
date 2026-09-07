@@ -5,6 +5,7 @@
 import chex
 import jax.numpy as jnp
 
+
 def get_transform_matrix_from_ab_list02(
     a: complex, b: complex, center_scaled: chex.Array
 ) -> chex.Array:
@@ -15,10 +16,10 @@ def get_transform_matrix_from_ab_list02(
     Args:
         a (COMPLEX_DTYPE): The complex 'a' coefficient.
         b (COMPLEX_DTYPE): The complex 'b' coefficient.
-        center_scaled (np.ndarray): A 1D NumPy array representing the scaled center of the molecule.
+        center_scaled (chex.Array): The scaled center of the molecule.
 
     Returns:
-        np.ndarray: A 4x4 transformation matrix.
+        chex.Array: A JAX 4x4 transformation matrix.
     """
     a2pb2 = a**2 + b**2
     a2mb2 = a**2 - b**2
