@@ -37,6 +37,16 @@ def configure_for_scientific_computing(
 
     global FLOAT_DTYPE
     global COMPLEX_DTYPE
+    platform_name = platform.lower() if platform is not None else None
+    if platform_name == "mps":
+        if enable_x64:
+            raise ValueError("the MPS backend does not support enable_x64=True")
+        jax.config.update("jax_enable_x64", False)
+        FLOAT_DTYPE = jnp.float32
+        COMPLEX_DTYPE = jnp.complex64
+        jax.config.update("jax_platform_name", "mps")
+        print("JAX configured for float32 precision on platform: mps")
+        return
     if enable_x64:
         jax.config.update("jax_enable_x64", True)
         print("JAX configured for float64 precision")
@@ -54,5 +64,5 @@ def configure_for_scientific_computing(
         COMPLEX_DTYPE = jnp.complex64
 
     if platform is not None:
-        jax.config.update("jax_platform_name", platform.lower())
+        jax.config.update("jax_platform_name", platform_name)
         print(f"JAX configured for platform: {platform}")

@@ -32,6 +32,10 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
   "pytest",
+  "scipy",
+]
+mps = [
+  "jax-mps; python_version >= '3.13'",
 ]
 notebooks = [
   "ipykernel",

@@ -23,6 +23,11 @@ from .calculate_zm_by_ab_rotation01 import (
     _calculate_zm_by_ab_rotation_jax,
 )
 from .descriptor_assembly import DescriptorAssemblyCache, DescriptorVector
+from .direct_moment_backend import (
+    DirectMomentCache,
+    calculate_direct_moments,
+    pack_occupied_voxels,
+)
 from .get_3dzd_121_descriptor02 import _get_3dzd_121_descriptor_jax
 
 
@@ -602,6 +607,8 @@ def calculate_descriptor_batch_from_voxels(
     rotation_reduction: str = "auto",
     moment_reduction: str = "auto",
     moment_precision: str = "auto",
+    moment_backend: str = "cartesian",
+    direct_moment_cache: DirectMomentCache | None = None,
 ) -> DescriptorVector:
     """Calculate complete descriptors for one padded, device-resident voxel batch."""
     if mode not in (0, 1, 2):
@@ -625,7 +632,16 @@ def calculate_descriptor_batch_from_voxels(
         raise ValueError("unknown rotation reduction")
     if moment_reduction not in ("auto", "scatter", "segmented_scan"):
         raise ValueError("unknown moment reduction")
-    resolved_precision = _resolve_moment_precision(max_order, moment_precision)
+    if moment_backend not in ("cartesian", "direct_recurrence"):
+        raise ValueError("moment_backend must be 'cartesian' or 'direct_recurrence'")
+    if moment_backend == "direct_recurrence":
+        if moment_precision in ("mixed", "strict"):
+            raise ValueError("direct_recurrence supports only auto/configured float32 moments")
+        if direct_moment_cache is None or direct_moment_cache.max_order != max_order:
+            raise ValueError("a matching direct_moment_cache is required")
+        resolved_precision = "configured"
+    else:
+        resolved_precision = _resolve_moment_precision(max_order, moment_precision)
     use_mixed_moments = resolved_precision == "mixed"
     use_strict_precision = resolved_precision == "strict"
     if use_mixed_moments or use_strict_precision:
@@ -641,6 +657,11 @@ def calculate_descriptor_batch_from_voxels(
         if x64_rotation_cache.max_order != max_order:
             raise ValueError("x64 rotation cache maximum order does not match max_order")
 
+    packed_voxels = (
+        None
+        if moment_backend != "direct_recurrence" or isinstance(voxels, jax.core.Tracer)
+        else pack_occupied_voxels(voxels)
+    )
     voxel_dtype = jnp.float64 if use_strict_precision else _config.FLOAT_DTYPE
     voxel_batch = jnp.asarray(voxels, dtype=voxel_dtype)
     if voxel_batch.ndim != 4 or voxel_batch.shape[0] == 0:
@@ -648,7 +669,16 @@ def calculate_descriptor_batch_from_voxels(
             "voxels must have shape (batch, x, y, z) with a non-empty batch"
         )
 
-    if use_strict_precision:
+    if moment_backend == "direct_recurrence":
+        masses, centers, _ = _calculate_bbox_order1_batch(voxel_batch)
+        radius = _calculate_radius_and_samples_batch(
+            voxel_batch, centers, masses, default_radius_multiplier
+        )
+        scaled, raw = calculate_direct_moments(
+            voxel_batch if packed_voxels is None else packed_voxels,
+            radius[3], radius[4], radius[5], direct_moment_cache
+        )
+    elif use_strict_precision:
         masses, centers, _ = _calculate_bbox_order1_batch(voxel_batch)
         radius = _calculate_radius_and_samples_batch(
             voxel_batch, centers, masses, default_radius_multiplier
@@ -757,6 +787,8 @@ def calculate_descriptor_batch_staged(
     rotation_reduction: str = "auto",
     moment_reduction: str = "auto",
     moment_precision: str = "auto",
+    moment_backend: str = "cartesian",
+    direct_moment_cache: DirectMomentCache | None = None,
 ) -> tuple[DescriptorVector, dict[int, Any]]:
     """Run the batch pipeline through independently synchronizable device stages."""
     if mode not in (0, 1, 2):
@@ -778,7 +810,16 @@ def calculate_descriptor_batch_staged(
             "staged normalization representation must be 'full_fixed' or "
             "'analytic_compact', or 'companion_compact'"
         )
-    resolved_precision = _resolve_moment_precision(max_order, moment_precision)
+    if moment_backend not in ("cartesian", "direct_recurrence"):
+        raise ValueError("moment_backend must be 'cartesian' or 'direct_recurrence'")
+    if moment_backend == "direct_recurrence":
+        if moment_precision in ("mixed", "strict"):
+            raise ValueError("direct_recurrence supports only auto/configured float32 moments")
+        if direct_moment_cache is None or direct_moment_cache.max_order != max_order:
+            raise ValueError("a matching direct_moment_cache is required")
+        resolved_precision = "configured"
+    else:
+        resolved_precision = _resolve_moment_precision(max_order, moment_precision)
     use_mixed_moments = resolved_precision == "mixed"
     use_strict_precision = resolved_precision == "strict"
     if use_mixed_moments or use_strict_precision:
@@ -794,6 +835,11 @@ def calculate_descriptor_batch_staged(
         if x64_rotation_cache.max_order != max_order:
             raise ValueError("x64 rotation cache maximum order does not match max_order")
 
+    packed_voxels = (
+        None
+        if moment_backend != "direct_recurrence" or isinstance(voxels, jax.core.Tracer)
+        else pack_occupied_voxels(voxels)
+    )
     voxel_dtype = jnp.float64 if use_strict_precision else _config.FLOAT_DTYPE
     voxel_batch = jnp.asarray(voxels, dtype=voxel_dtype)
     if voxel_batch.ndim != 4 or voxel_batch.shape[0] == 0:
@@ -818,7 +864,15 @@ def calculate_descriptor_batch_staged(
             voxel_batch, centers, masses, default_radius_multiplier
         ),
     )
-    if use_strict_precision:
+    if moment_backend == "direct_recurrence":
+        scaled, raw = execute(
+            "direct_moments",
+            lambda: calculate_direct_moments(
+                voxel_batch if packed_voxels is None else packed_voxels,
+                x_samples, y_samples, z_samples, direct_moment_cache
+            ),
+        )
+    elif use_strict_precision:
         _, _, bbox_moments = execute(
             "bbox_max_order",
             lambda: _calculate_bbox_max_order_batch(

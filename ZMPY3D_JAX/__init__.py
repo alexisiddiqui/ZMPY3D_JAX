@@ -35,6 +35,11 @@ from .lib.calculate_bbox_moment_2_zm05 import (
     calculate_bbox_moment_2_zm05 as calculate_bbox_moment_2_zm,
     prepare_bbox_to_zm_cache as prepare_bbox_to_zm_cache,
 )
+from .lib.direct_moment_backend import (
+    DirectMomentCache as DirectMomentCache,
+    calculate_direct_moments as calculate_direct_moments,
+    prepare_direct_moment_cache as prepare_direct_moment_cache,
+)
 from .lib.calculate_box_by_grid_width import (
     calculate_box_by_grid_width as calculate_box_by_grid_width,
 )

@@ -524,6 +524,18 @@ wheels = [
 ]
 
 [[package]]
+name = "jax-mps"
+version = "0.10.10"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "jax", marker = "python_full_version >= '3.13'" },
+    { name = "jaxlib", marker = "python_full_version >= '3.13'" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/2d/cc/d055fc820b97f234d975044a30118eadec0f009c4e5cec55af9d677f8bc0/jax_mps-0.10.10-py3-none-macosx_14_0_arm64.whl", hash = "sha256:029f29b00c4abfbb942fc5a9b57308879e209e94c99a94f5069fd87055157fc1", size = 44081522 },
+]
+
+[[package]]
 name = "jaxlib"
 version = "0.10.2"
 source = { registry = "https://pypi.org/simple" }
@@ -1383,6 +1395,11 @@ dependencies = [
 [package.optional-dependencies]
 dev = [
     { name = "pytest" },
+    { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "scipy", version = "1.18.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+]
+mps = [
+    { name = "jax-mps", marker = "python_full_version >= '3.13'" },
 ]
 notebooks = [
     { name = "ipykernel" },
@@ -1396,8 +1413,10 @@ requires-dist = [
     { name = "gdown" },
     { name = "ipykernel", marker = "extra == 'notebooks'" },
     { name = "jax", specifier = ">=0.7.1" },
+    { name = "jax-mps", marker = "python_full_version >= '3.13' and extra == 'mps'" },
     { name = "jaxlib" },
     { name = "numpy", specifier = ">=1.23.5" },
     { name = "py3dmol", marker = "extra == 'notebooks'" },
     { name = "pytest", marker = "extra == 'dev'" },
+    { name = "scipy", marker = "extra == 'dev'" },
 ]
